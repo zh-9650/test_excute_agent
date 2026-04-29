@@ -48,18 +48,18 @@ class ExplorationEngine:
         plan = self.build_plan(cases)
         result = ExplorationResult(exploration_id=exp_id)
 
-        await self._log(f"📋 探索计划: {plan['total_pages']} 个页面, {plan['total_cases']} 条用例")
-        page_descs = [f"{p['module']} ({len(p['cases'])}条用例)" for p in plan["pages"]]
-        await self._log(f"  目标页面: {', '.join(page_descs[:8])}{'...' if len(page_descs) > 8 else ''}")
+        await self._log(f"Exploration plan: {plan['total_pages']} pages, {plan['total_cases']} cases")
+        page_descs = [f"{p['module']} ({len(p['cases'])} cases)" for p in plan["pages"]]
+        await self._log(f"  Target pages: {', '.join(page_descs[:8])}{'...' if len(page_descs) > 8 else ''}")
 
         for i, page_info in enumerate(plan["pages"]):
             page_url = self._resolve_url(target_url, page_info["url_hint"])
-            await self._log(f"  [{i+1}/{plan['total_pages']}] 导航到: {page_url}")
+            await self._log(f"  [{i+1}/{plan['total_pages']}] Navigating to: {page_url}")
 
             nav_result = await self.browser.goto(page_url)
             if not nav_result["success"]:
                 reason = nav_result.get("error", "unknown")
-                await self._log(f"    ⚠️ 跳过: {reason}")
+                await self._log(f"    SKIPPED: {reason}")
                 result.pages_skipped.append({
                     "url": page_url, "reason": reason,
                     "module": page_info["module"]
@@ -69,19 +69,18 @@ class ExplorationEngine:
             await self.browser.dismiss_dialogs()
             ready = await self.browser.wait_for_page_ready(strategy="networkidle")
             if not ready:
-                await self._log(f"    ⏳ 页面未完全加载，降级等待...")
+                await self._log(f"    Page not fully loaded, fallback wait...")
                 await self.browser.wait_for_page_ready(strategy="domcontentloaded")
 
-            await self._log(f"    🔎 收集可交互元素...")
+            await self._log(f"    Collecting interactive elements...")
             elements = await self.browser.collect_interactive_elements()
 
-            # 元素类型分布统计
             tag_counts = {}
             for e in elements:
                 tag_counts[e.tag] = tag_counts.get(e.tag, 0) + 1
             tag_summary = " ".join([f"{tag}:{cnt}" for tag, cnt in sorted(tag_counts.items())])
 
-            await self._log(f"    ✅ 收集 {len(elements)} 个元素 [{tag_summary}]")
+            await self._log(f"    Collected {len(elements)} elements [{tag_summary}]")
 
             result.pages_explored.append({
                 "url": self.browser.page.url, "module": page_info["module"],
@@ -95,8 +94,8 @@ class ExplorationEngine:
         result.coverage_score = explored / total
 
         if result.pages_skipped:
-            await self._log(f"⚠️ {len(result.pages_skipped)} 个页面被跳过")
-        await self._log(f"📊 探索完成: {explored}/{total} 页面, {result.total_elements} 个元素, 覆盖率 {result.coverage_score:.0%}")
+            await self._log(f"WARNING: {len(result.pages_skipped)} pages skipped")
+        await self._log(f"Exploration done: {explored}/{total} pages, {result.total_elements} elements, coverage {result.coverage_score:.0%}")
 
         return result
 
@@ -107,18 +106,18 @@ class ExplorationEngine:
 
     def generate_exploration_report(self, result: ExplorationResult) -> str:
         lines = [
-            "# 探索报告", f"\n## 概况",
-            f"- 已探索页面数：{len(result.pages_explored)}",
-            f"- 跳过页面数：{len(result.pages_skipped)}",
-            f"- 收集元素总数：{result.total_elements}",
-            f"- 覆盖率：{result.coverage_score:.0%}",
+            "# Exploration Report", f"\n## Summary",
+            f"- Pages explored: {len(result.pages_explored)}",
+            f"- Pages skipped: {len(result.pages_skipped)}",
+            f"- Total elements: {result.total_elements}",
+            f"- Coverage: {result.coverage_score:.0%}",
         ]
         if result.pages_explored:
-            lines.append("\n## 已探索页面")
+            lines.append("\n## Explored Pages")
             for p in result.pages_explored:
-                lines.append(f"- {p['module']} → {p['url']} ({p['elements_found']} 个元素)")
+                lines.append(f"- {p['module']} -> {p['url']} ({p['elements_found']} elements)")
         if result.pages_skipped:
-            lines.append("\n## 跳过页面")
+            lines.append("\n## Skipped Pages")
             for p in result.pages_skipped:
-                lines.append(f"- {p['module']} → {p['url']} ({p['reason']})")
+                lines.append(f"- {p['module']} -> {p['url']} ({p['reason']})")
         return "\n".join(lines)

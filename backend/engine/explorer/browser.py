@@ -36,7 +36,7 @@ class BrowserController:
         if self._browser:
             await self._browser.close()
         if self._playwright:
-            await self._playwright.__aexit__(None, None, None)
+            await self._playwright.stop()
 
     async def goto(self, url: str, timeout_ms: int = 30000) -> dict:
         try:

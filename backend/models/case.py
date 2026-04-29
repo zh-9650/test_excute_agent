@@ -15,8 +15,8 @@ class CaseStatus(str, Enum):
 
 
 VALID_TRANSITIONS = {
-    CaseStatus.PENDING: [CaseStatus.EXPLORING],
-    CaseStatus.EXPLORING: [CaseStatus.GENERATING, CaseStatus.BLOCKED],
+    CaseStatus.PENDING: [CaseStatus.EXPLORING, CaseStatus.RUNNING],
+    CaseStatus.EXPLORING: [CaseStatus.GENERATING, CaseStatus.BLOCKED, CaseStatus.RUNNING],
     CaseStatus.GENERATING: [CaseStatus.RUNNING, CaseStatus.ERROR],
     CaseStatus.RUNNING: [CaseStatus.PASSED, CaseStatus.FAILED, CaseStatus.BLOCKED, CaseStatus.ERROR],
     CaseStatus.PASSED: [CaseStatus.PENDING, CaseStatus.RUNNING],

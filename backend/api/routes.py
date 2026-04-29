@@ -153,7 +153,7 @@ async def test_logs_websocket(ws: WebSocket, run_id: str):
 
 
 @router.post("/tests/run")
-async def run_tests(payload: dict, background_tasks: BackgroundTasks):
+async def run_tests(payload: dict):
     """启动测试执行（异步后台任务）"""
     suite_id = payload.get("suite_id")
     target_url = payload.get("target_url")
@@ -164,15 +164,31 @@ async def run_tests(payload: dict, background_tasks: BackgroundTasks):
         raise HTTPException(400, "suite_id and target_url are required")
 
     cfg = Config()
+    cfg.browser_headless = True  # 服务端执行强制无头模式
     orchestrator = Orchestrator(config=cfg, log_callback=_websocket_log)
 
     run_id = str(uuid.uuid4())[:8]
 
-    async def _run():
-        state = await orchestrator.run(suite_id, target_url, credentials, enrichments)
-        _run_states[run_id] = state
+    # 先占位，让 status API 能立即返回
+    _run_states[run_id] = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="running")
 
-    background_tasks.add_task(asyncio.create_task, _run())
+    async def _run():
+        try:
+            state = await orchestrator.run(suite_id, target_url, credentials, enrichments)
+            _run_states[run_id] = state
+        except Exception as e:
+            import traceback
+            err_state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="failed")
+            err_state.log("error", f"执行异常: {e}\n{traceback.format_exc()[:500]}")
+            _run_states[run_id] = err_state
+            if run_id in _active_ws:
+                for ws in _active_ws[run_id]:
+                    try:
+                        await ws.send_text(json.dumps({"ts": 0, "level": "error", "msg": f"执行异常: {e}"}))
+                    except Exception:
+                        pass
+
+    asyncio.create_task(_run())
 
     return {"run_id": run_id, "status": "started"}
 

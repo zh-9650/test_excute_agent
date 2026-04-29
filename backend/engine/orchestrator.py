@@ -10,7 +10,6 @@ from backend.engine.explorer.session import SessionManager
 from backend.engine.explorer.browser import BrowserController
 from backend.engine.explorer.engine import ExplorationEngine
 from backend.engine.generator.generator import ScriptGenerator
-from backend.engine.generator.data_factory import TestDataFactory
 from backend.engine.executor.executor import SmartExecutor, ExecutionContext
 from backend.engine.executor.healing import HealingStore
 from backend.engine.reporter.reporter import ReportGenerator
@@ -23,12 +22,12 @@ class RunState:
     suite_id: str
     target_url: str
     credentials: dict
-    status: str = "pending"  # pending | exploring | generating | running | analyzing | completed | failed
+    status: str = "pending"
     logs: list[dict] = field(default_factory=list)
     cases: list[TestCase] = field(default_factory=list)
     case_results: list[dict] = field(default_factory=list)
     exploration_result: dict = field(default_factory=dict)
-    scripts: dict[str, str] = field(default_factory=dict)  # case_id -> script
+    scripts: dict[str, str] = field(default_factory=dict)
     start_time: float = 0.0
     end_time: float = 0.0
     ai_call_count: int = 0
@@ -46,11 +45,9 @@ class RunState:
 
 
 class Orchestrator:
-    """主流程编排器：协调所有模块完成端到端测试执行"""
-
     def __init__(self, config, log_callback=None):
         self.config = config
-        self.log_callback = log_callback  # async callback for WebSocket broadcast
+        self.log_callback = log_callback
         self.session_mgr = SessionManager()
         self.generator = ScriptGenerator(ai=config.create_provider() if config.ai_api_key else None)
         self.healing = HealingStore()
@@ -61,33 +58,32 @@ class Orchestrator:
             await self.log_callback(state.run_id, {"level": level, "msg": msg, "ts": time.time()})
 
     async def run(self, suite_id: str, target_url: str, credentials: dict, enrichment_data: dict = None) -> RunState:
-        """主入口：执行完整测试流程"""
         run_id = str(uuid.uuid4())[:8]
         state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials)
         state.start_time = time.time()
 
-        await self._log(state, "info", f"=== 测试开始 (run_id={run_id}) ===")
-        await self._log(state, "info", f"目标: {target_url}, 用例集: {suite_id}")
+        await self._log(state, "info", f"=== Test start (run_id={run_id}) ===")
+        await self._log(state, "info", f"Target: {target_url}, Suite: {suite_id}")
 
-        # 1. 加载用例
         state.cases = self._load_cases(suite_id)
-        await self._log(state, "info", f"加载 {len(state.cases)} 条用例")
+        await self._log(state, "info", f"Loaded {len(state.cases)} test cases")
 
-        # 应用用户补全数据
         if enrichment_data:
-            await self._log(state, "info", "应用用户补全数据...")
+            await self._log(state, "info", "Applying user enrichment data...")
             enricher = CaseEnricher()
             for case in state.cases:
                 if case.id in enrichment_data:
                     enricher.apply_enrichment(case, enrichment_data[case.id])
 
-        # 2. 元素探索
-        await self._log(state, "info", "--- 阶段1: 元素探索 ---")
+        # Phase 1: Exploration
+        state.status = "exploring"
+        await self._log(state, "info", "--- Phase 1: Element Exploration ---")
         exploration = await self._explore(state, target_url, credentials)
         state.exploration_result = exploration
 
-        # 3. 脚本生成
-        await self._log(state, "info", "--- 阶段2: 脚本生成 ---")
+        # Phase 2: Script Generation
+        state.status = "generating"
+        await self._log(state, "info", "--- Phase 2: Script Generation ---")
         element_map = self._build_element_map(exploration)
         for case in state.cases:
             if case.completeness in ("complete", "enriched"):
@@ -96,40 +92,40 @@ class Orchestrator:
                 if precheck["valid"]:
                     state.scripts[case.id] = script
                 else:
-                    await self._log(state, "warn", f"脚本预检失败 [{case.title}]: {precheck['errors']}")
+                    await self._log(state, "warn", f"Script precheck failed [{case.title}]: {precheck['errors']}")
             else:
-                await self._log(state, "warn", f"跳过未补全用例: {case.title}")
+                await self._log(state, "warn", f"Skipping incomplete case: {case.title}")
 
-        await self._log(state, "info", f"生成 {len(state.scripts)} 个脚本")
+        await self._log(state, "info", f"Generated {len(state.scripts)} scripts")
 
-        # 4. 智能执行
-        await self._log(state, "info", "--- 阶段3: 智能执行 ---")
+        # Phase 3: Execution
+        state.status = "running"
+        await self._log(state, "info", "--- Phase 3: Smart Execution ---")
         await self._execute_all(state, credentials)
 
-        # 5. 结果分析
-        await self._log(state, "info", "--- 阶段4: 结果分析 ---")
+        # Phase 4: Analysis
+        state.status = "analyzing"
+        await self._log(state, "info", "--- Phase 4: Result Analysis ---")
         executor = SmartExecutor()
         analysis = executor.classify_results(state.case_results)
 
-        # 6. 生成报告
-        await self._log(state, "info", "--- 阶段5: 报告生成 ---")
+        # Phase 5: Report
+        await self._log(state, "info", "--- Phase 5: Report Generation ---")
         report = self._generate_report(state, analysis)
 
+        state.status = "completed"
         state.end_time = time.time()
         duration = state.end_time - state.start_time
-        await self._log(state, "info", f"=== 测试完成 ({duration:.0f}s) ===")
-        await self._log(state, "info", f"通过: {state.summary()['passed']}, 失败: {state.summary()['failed']}, 阻塞: {state.summary()['blocked']}")
+        await self._log(state, "info", f"=== Test complete ({duration:.0f}s) ===")
+        await self._log(state, "info", f"Passed: {state.summary()['passed']}, Failed: {state.summary()['failed']}, Blocked: {state.summary()['blocked']}")
 
-        # 持久化
         self._persist_results(state)
-
         return state
 
     def _load_cases(self, suite_id: str) -> list[TestCase]:
         db = get_db()
         rows = db.execute("SELECT * FROM test_cases WHERE suite_id = ?", (suite_id,)).fetchall()
         db.close()
-
         from backend.models.case import Step
         cases = []
         for r in rows:
@@ -150,24 +146,21 @@ class Orchestrator:
     async def _explore(self, state: RunState, target_url: str, credentials: dict) -> dict:
         browser = BrowserController(headless=self.config.browser_headless)
         try:
-            await self._log(state, "info", "🌐 启动浏览器...")
+            await self._log(state, "info", "Launching browser...")
             await browser.start()
 
-            # 登录
             username = credentials.get("username", "")
             password = credentials.get("password", "")
             session = self.session_mgr.create(target_url, username, password)
 
             if username and password:
-                await self._log(state, "info", f"🔑 导航到目标地址并检测登录表单...")
+                await self._log(state, "info", f"Navigating to {target_url} and detecting login form...")
                 await browser.goto(target_url)
                 await browser.wait_for_page_ready(strategy="domcontentloaded")
-
                 await self._detect_and_login(browser, state, username, password)
             else:
-                await self._log(state, "info", "⚠️ 未提供凭据，跳过登录")
+                await self._log(state, "info", "No credentials provided, skipping login")
 
-            # 探索
             explore_log = lambda msg: self._log(state, "info", msg)
             engine = ExplorationEngine(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None, log_callback=explore_log)
             result = await engine.explore(state.cases, session, target_url)
@@ -179,47 +172,45 @@ class Orchestrator:
                 "coverage": result.coverage_score,
             }
         except Exception as e:
-            await self._log(state, "error", f"探索失败: {e}")
+            import traceback
+            await self._log(state, "error", f"Exploration failed: {e}")
+            await self._log(state, "error", traceback.format_exc()[-300:])
             return {"error": str(e), "pages_explored": [], "pages_skipped": []}
         finally:
             await browser.stop()
 
     async def _detect_and_login(self, browser, state: RunState, username: str, password: str):
-        """检测登录表单并自动登录"""
         page_summary = await browser.get_page_summary()
         text = page_summary.get("text_snippet", "")
 
-        # 快速检测关键词
-        login_keywords = ["登录", "login", "sign in", "密码", "password", "用户名", "username"]
+        login_keywords = ["login", "password", "username", "sign in"]
         is_login_page = any(kw in text.lower() for kw in login_keywords)
 
         if not is_login_page:
-            await self._log(state, "info", "  未检测到登录表单，跳过登录")
+            await self._log(state, "info", "  No login form detected, skipping login")
             return
 
-        await self._log(state, "info", "  🔍 检测到登录表单，收集登录元素...")
+        await self._log(state, "info", "  Login form detected, collecting elements...")
         elements = await browser.collect_interactive_elements()
 
-        # 找用户名/密码输入框和登录按钮
         username_sel, password_sel, submit_sel = None, None, None
         for el in elements:
             attrs = f"{el.tag} {el.text} {el.aria_label} {' '.join(el.classes)}".lower()
-            if not username_sel and any(k in attrs for k in ["username", "用户名", "账号", "email", "邮箱"]):
+            if not username_sel and any(k in attrs for k in ["username", "email", "account"]):
                 username_sel = el.selector
             if not password_sel and el.tag == "input" and "password" in attrs:
                 password_sel = el.selector
-            if not submit_sel and any(k in attrs for k in ["登录", "login", "sign", "提交", "submit"]):
+            if not submit_sel and any(k in attrs for k in ["login", "sign", "submit"]):
                 submit_sel = el.selector
 
-        # 如果简单匹配失败，用 AI 识别
         if not all([username_sel, password_sel, submit_sel]) and self.config.ai_api_key:
-            await self._log(state, "ai", "  简单匹配未找到完整登录表单，调用 AI 识别...")
+            await self._log(state, "ai", "  Using AI to identify login form...")
             try:
                 ai = self.config.create_provider()
-                elem_desc = [{"tag": e.tag, "text": e.text, "selector": e.selector, "aria": e.aria_label} for e in elements[:30]]
+                elem_desc = [{"tag": e.tag, "text": e.text[:50], "selector": e.selector} for e in elements[:30]]
                 judgment = await ai.analyze(
-                    system_prompt="你是一个测试工程师。请从页面元素中识别登录表单。返回 JSON: {found: bool, username_selector: str, password_selector: str, submit_selector: str, reasoning: str}",
-                    user_prompt=f"元素列表：{elem_desc}\n目标：找到用户名输入框、密码输入框和登录按钮的选择器"
+                    system_prompt="You are a test engineer. Identify login form elements. Return JSON: {found: bool, username_selector: str, password_selector: str, submit_selector: str, reasoning: str}",
+                    user_prompt=f"Elements: {json.dumps(elem_desc, ensure_ascii=False)}"
                 )
                 if judgment.action.get("username_selector"):
                     username_sel = judgment.action["username_selector"]
@@ -228,27 +219,26 @@ class Orchestrator:
                 if judgment.action.get("submit_selector"):
                     submit_sel = judgment.action["submit_selector"]
             except Exception as e:
-                await self._log(state, "warn", f"  AI 识别登录表单失败: {e}")
+                await self._log(state, "warn", f"  AI login detection failed: {e}")
 
-        # 执行登录
         if username_sel and password_sel:
-            await self._log(state, "info", f"  ✏️ 填写账号: {username_sel}")
+            await self._log(state, "info", f"  Filling username: {username_sel}")
             try:
                 await browser.page.fill(username_sel, username)
-                await self._log(state, "info", f"  ✏️ 填写密码: {password_sel}")
+                await self._log(state, "info", f"  Filling password: {password_sel}")
                 await browser.page.fill(password_sel, password)
                 if submit_sel:
-                    await self._log(state, "info", f"  🖱️ 点击登录: {submit_sel}")
+                    await self._log(state, "info", f"  Clicking login: {submit_sel}")
                     await browser.page.click(submit_sel)
                     await browser.wait_for_page_ready(strategy="domcontentloaded")
-                    await self._log(state, "info", "  ✅ 登录完成")
+                    await self._log(state, "info", "  Login completed")
                 else:
                     await browser.page.keyboard.press("Enter")
-                    await self._log(state, "info", "  ✅ 按回车提交登录")
+                    await self._log(state, "info", "  Pressed Enter to submit")
             except Exception as e:
-                await self._log(state, "error", f"  ❌ 登录失败: {e}")
+                await self._log(state, "error", f"  Login failed: {e}")
         else:
-            await self._log(state, "warn", "  ⚠️ 无法识别登录表单元素，跳过登录")
+            await self._log(state, "warn", "  Could not identify login form elements, skipping login")
 
     def _build_element_map(self, exploration: dict) -> dict:
         result = {}
@@ -275,7 +265,7 @@ class Orchestrator:
                 if not case:
                     continue
 
-                await self._log(state, "info", f"执行: {case.title}")
+                await self._log(state, "info", f"Executing: {case.title}")
                 case.transition_to(CaseStatus.RUNNING)
 
                 ctx = ExecutionContext(case=case, script=script, session_id="")
@@ -283,12 +273,15 @@ class Orchestrator:
                 state.case_results.append(result)
                 state.ai_call_count += ctx.ai_call_count
 
-                status_icon = "✅" if result.get("status") == "passed" else "❌" if result.get("status") == "failed" else "⚠️"
+                status = result.get("status", "error")
+                icon = "PASS" if status == "passed" else "FAIL" if status == "failed" else "WARN"
                 ai_info = f" [AI: {result.get('ai_judgment', 'N/A')}]" if result.get("ai_judgment") else ""
-                await self._log(state, "info", f"  {status_icon} {case.title}{ai_info}")
+                await self._log(state, "info", f"  [{icon}] {case.title}{ai_info}")
 
         except Exception as e:
-            await self._log(state, "error", f"执行阶段异常: {e}")
+            import traceback
+            await self._log(state, "error", f"Execution phase error: {e}")
+            await self._log(state, "error", traceback.format_exc()[-300:])
         finally:
             await browser.stop()
 
@@ -342,7 +335,7 @@ class Orchestrator:
             """INSERT OR REPLACE INTO test_runs (id, suite_id, target_url, credentials, status, started_at, finished_at, config)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (state.run_id, state.suite_id, state.target_url, json.dumps(state.credentials),
-             "completed" if state.summary()["failed"] == 0 else "completed",
+             "completed",
              time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(state.start_time)),
              time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(state.end_time)),
              "{}")
