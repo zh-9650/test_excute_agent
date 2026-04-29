@@ -1,12 +1,19 @@
 import json
 import uuid
-from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket
+import asyncio
+from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
 from backend.engine.parser.csv_parser import CSVParser
 from backend.engine.parser.enricher import CaseEnricher
 from backend.config import Config
 from backend.storage.database import get_db
+from backend.engine.orchestrator import Orchestrator, RunState
 
 router = APIRouter()
+
+# 全局 WebSocket 连接管理
+_active_ws: dict[str, list[WebSocket]] = {}
+# 已完成/进行中的 run 状态
+_run_states: dict[str, RunState] = {}
 
 
 @router.get("/health")
@@ -114,3 +121,131 @@ async def clear_healing():
     store = HealingStore()
     store.clear()
     return {"status": "cleared"}
+
+
+# ========== 测试执行 + WebSocket 日志 ==========
+
+async def _websocket_log(run_id: str, message: dict):
+    """将日志推送到所有连接的 WebSocket"""
+    if run_id not in _active_ws:
+        return
+    dead = []
+    for ws in _active_ws[run_id]:
+        try:
+            await ws.send_text(json.dumps(message))
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _active_ws[run_id].remove(ws)
+
+
+@router.websocket("/tests/{run_id}/ws")
+async def test_logs_websocket(ws: WebSocket, run_id: str):
+    await ws.accept()
+    if run_id not in _active_ws:
+        _active_ws[run_id] = []
+    _active_ws[run_id].append(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        _active_ws[run_id].remove(ws)
+
+
+@router.post("/tests/run")
+async def run_tests(payload: dict, background_tasks: BackgroundTasks):
+    """启动测试执行（异步后台任务）"""
+    suite_id = payload.get("suite_id")
+    target_url = payload.get("target_url")
+    credentials = payload.get("credentials", {})
+    enrichments = payload.get("enrichments", {})
+
+    if not suite_id or not target_url:
+        raise HTTPException(400, "suite_id and target_url are required")
+
+    cfg = Config()
+    orchestrator = Orchestrator(config=cfg, log_callback=_websocket_log)
+
+    run_id = str(uuid.uuid4())[:8]
+
+    async def _run():
+        state = await orchestrator.run(suite_id, target_url, credentials, enrichments)
+        _run_states[run_id] = state
+
+    background_tasks.add_task(asyncio.create_task, _run())
+
+    return {"run_id": run_id, "status": "started"}
+
+
+@router.get("/tests/{run_id}/status")
+async def get_test_status(run_id: str):
+    state = _run_states.get(run_id)
+    if not state:
+        return {"status": "pending", "message": "Run not started or not found"}
+
+    summary = state.summary()
+    return {
+        "run_id": run_id,
+        "status": state.status,
+        "summary": summary,
+        "logs_count": len(state.logs),
+    }
+
+
+@router.get("/tests/{run_id}/logs")
+async def get_test_logs(run_id: str):
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+    return state.logs
+
+
+# ========== 用例补全 ==========
+
+@router.post("/cases/{suite_id}/enrich")
+async def enrich_cases(suite_id: str, payload: dict):
+    """保存用户补全数据"""
+    enrichments = payload.get("enrichments", {})
+    db = get_db()
+    enricher = CaseEnricher()
+    count = 0
+    for case_id, data in enrichments.items():
+        row = db.execute("SELECT * FROM test_cases WHERE id = ? AND suite_id = ?", (case_id, suite_id)).fetchone()
+        if row:
+            db.execute("UPDATE test_cases SET completeness = ? WHERE id = ?", ("enriched", case_id))
+            count += 1
+    db.commit()
+    db.close()
+    return {"status": "saved", "enriched_count": count}
+
+
+# ========== 报告 ==========
+
+@router.get("/reports/{run_id}")
+async def get_report(run_id: str):
+    import os
+    path = f"test_artifacts/{run_id}/report.md"
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return {"report": f.read()}
+    raise HTTPException(404, "Report not found")
+
+
+@router.get("/reports/{run_id}/json")
+async def get_report_json(run_id: str):
+    import os
+    path = f"test_artifacts/{run_id}/report.json"
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return json.loads(f.read())
+    raise HTTPException(404, "Report not found")
+
+
+@router.get("/reports/{run_id}/artifacts/{filename}")
+async def get_artifact(run_id: str, filename: str):
+    import os
+    path = f"test_artifacts/{run_id}/{filename}"
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return {"content": f.read()}
+    raise HTTPException(404, "Artifact not found")

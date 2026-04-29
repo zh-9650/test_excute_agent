@@ -6,9 +6,9 @@ from pathlib import Path
 class Config:
     def __init__(self, config_path: str = ""):
         self.ai_provider: str = "openai_compatible"
-        self.ai_model: str = "deepseek-chat"
-        self.ai_base_url: str = "https://api.deepseek.com/v1"
-        self.ai_api_key: str = ""
+        self.ai_model: str = "Qwen3.5-122B"
+        self.ai_base_url: str = "https://qwen.cangjieit.cn:8443/v1"
+        self.ai_api_key: str = "sk-Q7m9X2pL4vR8nK1jW5tY3bH6cF0dG9sA"
         self.ai_backup_model: str = ""
         self.ai_backup_base_url: str = ""
         self.ai_backup_api_key: str = ""

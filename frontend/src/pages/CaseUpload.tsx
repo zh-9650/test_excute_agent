@@ -16,7 +16,7 @@ interface EnrichmentCase {
   };
 }
 
-export default function CaseUpload() {
+export default function CaseUpload({ onStartTest }: { onStartTest: (suiteId: string) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -46,11 +46,19 @@ export default function CaseUpload() {
     }));
   };
 
-  const handleSubmitEnrichments = () => {
+  const handleSubmitEnrichments = async () => {
     const filled = Object.entries(enrichments).filter(
       ([, v]) => v.target_url || v.selector_hint
     ).length;
-    alert(`已保存 ${filled} 条补全信息（后端 API 待接入完整流程）`);
+    if (result?.suite_id) {
+      try {
+        await fetch(`http://localhost:8765/api/v1/cases/${result.suite_id}/enrich`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enrichments }),
+        });
+      } catch (e) { /* 保存失败不阻塞 */ }
+    }
     setStep("complete");
   };
 
@@ -243,7 +251,7 @@ export default function CaseUpload() {
             <div style={{ textAlign: "center", padding: 20 }}>
               <p>🎉 所有用例均完整，可直接进入下一步！</p>
               <button
-                onClick={() => setStep("complete")}
+                onClick={() => result?.suite_id && onStartTest(result.suite_id)}
                 style={{
                   padding: "10px 24px",
                   background: "#2563eb",
@@ -290,6 +298,7 @@ export default function CaseUpload() {
 
           <div style={{ marginTop: 16, display: "flex", gap: 12 }}>
             <button
+              onClick={() => result?.suite_id && onStartTest(result.suite_id)}
               style={{
                 padding: "10px 24px",
                 background: "#059669",
@@ -299,7 +308,7 @@ export default function CaseUpload() {
                 cursor: "pointer",
               }}
             >
-              🚀 开始探索（待接入）
+              🚀 开始探索
             </button>
             <button
               onClick={handleReset}
