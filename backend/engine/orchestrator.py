@@ -57,9 +57,13 @@ class Orchestrator:
         if self.log_callback:
             await self.log_callback(state.run_id, {"level": level, "msg": msg, "ts": time.time()})
 
-    async def run(self, suite_id: str, target_url: str, credentials: dict, enrichment_data: dict = None) -> RunState:
-        run_id = str(uuid.uuid4())[:8]
-        state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials)
+    async def run(self, suite_id: str, target_url: str, credentials: dict, enrichment_data: dict = None, state: RunState = None) -> RunState:
+        if state is None:
+            state = RunState(run_id=str(uuid.uuid4())[:8], suite_id=suite_id, target_url=target_url, credentials=credentials)
+
+        # Give WebSocket time to connect before starting heavy work
+        await asyncio.sleep(1.0)
+        run_id = state.run_id
         state.start_time = time.time()
 
         await self._log(state, "info", f"=== Test start (run_id={run_id}) ===")
@@ -86,15 +90,23 @@ class Orchestrator:
         await self._log(state, "info", "--- Phase 2: Script Generation ---")
         element_map = self._build_element_map(exploration)
         for case in state.cases:
-            if case.completeness in ("complete", "enriched"):
-                script = self.generator.build_script_template(case, element_map)
-                precheck = self.generator.precheck(script)
-                if precheck["valid"]:
-                    state.scripts[case.id] = script
-                else:
-                    await self._log(state, "warn", f"Script precheck failed [{case.title}]: {precheck['errors']}")
-            else:
+            if case.completeness not in ("complete", "enriched"):
                 await self._log(state, "warn", f"Skipping incomplete case: {case.title}")
+                continue
+
+            script = None
+            if self.config.ai_api_key:
+                await self._log(state, "ai", f"  [AI] Generating script for: {case.title}")
+                script = await self.generator.generate_with_ai(case, element_map)
+
+            if not script:
+                script = self.generator.build_script_template(case, element_map)
+
+            precheck = self.generator.precheck(script)
+            if precheck["valid"]:
+                state.scripts[case.id] = script
+            else:
+                await self._log(state, "warn", f"Script precheck failed [{case.title}]: {precheck['errors']}")
 
         await self._log(state, "info", f"Generated {len(state.scripts)} scripts")
 
@@ -131,7 +143,8 @@ class Orchestrator:
         for r in rows:
             d = dict(r)
             steps_data = json.loads(d.get("steps", "[]"))
-            steps = [Step(order=s.get("order", 0), action=s.get("action", "")) for s in steps_data]
+            steps = [Step(order=s.get("order", 0), action=s.get("action", ""),
+                         enrichment=s.get("enrichment")) for s in steps_data]
             case = TestCase(
                 id=d["id"], suite_id=d["suite_id"], module=d.get("module", ""), title=d.get("title", ""),
                 preconditions=d.get("preconditions", ""), steps=steps,

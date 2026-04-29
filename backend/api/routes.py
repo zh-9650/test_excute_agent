@@ -170,12 +170,12 @@ async def run_tests(payload: dict):
     run_id = str(uuid.uuid4())[:8]
 
     # 先占位，让 status API 能立即返回
-    _run_states[run_id] = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="running")
+    placeholder = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="running")
+    _run_states[run_id] = placeholder
 
     async def _run():
         try:
-            state = await orchestrator.run(suite_id, target_url, credentials, enrichments)
-            _run_states[run_id] = state
+            await orchestrator.run(suite_id, target_url, credentials, enrichments, state=placeholder)
         except Exception as e:
             import traceback
             err_state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="failed")
@@ -220,15 +220,21 @@ async def get_test_logs(run_id: str):
 
 @router.post("/cases/{suite_id}/enrich")
 async def enrich_cases(suite_id: str, payload: dict):
-    """保存用户补全数据"""
+    """保存用户补全数据到用例步骤中"""
     enrichments = payload.get("enrichments", {})
     db = get_db()
-    enricher = CaseEnricher()
     count = 0
     for case_id, data in enrichments.items():
-        row = db.execute("SELECT * FROM test_cases WHERE id = ? AND suite_id = ?", (case_id, suite_id)).fetchone()
+        row = db.execute("SELECT steps FROM test_cases WHERE id = ? AND suite_id = ?", (case_id, suite_id)).fetchone()
         if row:
-            db.execute("UPDATE test_cases SET completeness = ? WHERE id = ?", ("enriched", case_id))
+            steps = json.loads(row["steps"])
+            for step in steps:
+                step["enrichment"] = {
+                    "target_url": data.get("target_url", ""),
+                    "selector_hint": data.get("selector_hint", "")
+                }
+            db.execute("UPDATE test_cases SET steps = ?, completeness = ? WHERE id = ?",
+                       (json.dumps(steps, ensure_ascii=False), "enriched", case_id))
             count += 1
     db.commit()
     db.close()

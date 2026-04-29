@@ -24,7 +24,7 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
     setResult(null);
     setReport(null);
 
-    // 1. 启动测试
+    // 1. 先启动测试
     const runResp = await fetch(`${API}/tests/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -37,12 +37,16 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
     const { run_id } = await runResp.json();
     setRunId(run_id);
 
-    // 2. 连接 WebSocket 接收实时日志
+    // 2. 立即连接 WebSocket（等待 open 后再继续）
     const ws = new WebSocket(`ws://localhost:8765/api/v1/tests/${run_id}/ws`);
-    ws.onmessage = (e) => {
-      const entry = JSON.parse(e.data);
-      setLogs((prev) => [...prev, entry]);
-    };
+    const wsReady = new Promise<void>((resolve) => {
+      ws.onopen = () => resolve();
+      ws.onmessage = (e) => {
+        const entry = JSON.parse(e.data);
+        setLogs((prev) => [...prev, entry]);
+      };
+    });
+    await wsReady; // 确保 WebSocket 已连接
 
     // 3. 轮询状态直到完成
     const poll = setInterval(async () => {

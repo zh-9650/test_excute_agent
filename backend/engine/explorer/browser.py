@@ -38,7 +38,7 @@ class BrowserController:
         if self._playwright:
             await self._playwright.stop()
 
-    async def goto(self, url: str, timeout_ms: int = 30000) -> dict:
+    async def goto(self, url: str, timeout_ms: int = 15000) -> dict:
         try:
             await self.page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             return {"success": True, "url": self.page.url}
