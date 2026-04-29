@@ -7,6 +7,11 @@ from backend.models.case import TestCase, Step
 
 class CSVParser:
     REQUIRED_COLUMNS = ["所属模块", "测试点", "步骤", "预期"]
+    # 列名别名（不同禅道版本的列名差异）
+    COLUMN_ALIASES = {
+        "测试点": ["测试点", "用例标题", "测试标题"],
+        "用例类型": ["用例类型", "测试类型"],
+    }
 
     def parse(self, content) -> list[TestCase]:
         if isinstance(content, bytes):
@@ -16,7 +21,10 @@ class CSVParser:
         if reader.fieldnames is None:
             return []
 
-        missing = [c for c in self.REQUIRED_COLUMNS if c not in reader.fieldnames]
+        fieldnames = self._normalize_fieldnames(reader.fieldnames)
+        reader.fieldnames = fieldnames
+
+        missing = [c for c in self.REQUIRED_COLUMNS if c not in fieldnames]
         if missing:
             return []
 
@@ -77,6 +85,17 @@ class CSVParser:
         if has_specific:
             return "incomplete"
         return "unknown"
+
+    def _normalize_fieldnames(self, fieldnames: list[str]) -> list[str]:
+        result = []
+        for name in fieldnames:
+            normalized = name.strip()
+            for canonical, aliases in self.COLUMN_ALIASES.items():
+                if normalized in aliases:
+                    normalized = canonical
+                    break
+            result.append(normalized)
+        return result
 
     def _detect_and_decode(self, data: bytes) -> str:
         for encoding in ["utf-8", "gbk", "gb2312", "gb18030"]:

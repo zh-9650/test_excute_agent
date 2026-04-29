@@ -4,7 +4,7 @@ from backend.engine.reporter.reporter import ReportGenerator
 
 def test_generate_markdown_report():
     gen = ReportGenerator(
-        templates_dir="C:/Users/17381/Desktop/test_platform/.worktrees/implement-ai-test-platform/backend/templates"
+        templates_dir="backend/templates"
     )
     run_data = {
         "run_id": "run-001", "target_url": "https://test.com",
@@ -32,7 +32,7 @@ def test_generate_markdown_report():
 
 def test_generate_json_report():
     gen = ReportGenerator(
-        templates_dir="C:/Users/17381/Desktop/test_platform/.worktrees/implement-ai-test-platform/backend/templates"
+        templates_dir="backend/templates"
     )
     run_data = {
         "run_id": "r1", "target_url": "",
