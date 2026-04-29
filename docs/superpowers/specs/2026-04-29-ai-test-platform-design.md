@@ -25,12 +25,11 @@ API层    FastAPI REST+WS    14端点 + WebSocket 实时推送
 
 ### 核心流程
 
-1. **用例导入** — CSV 上传 → 编码检测 → 解析 → 结构化用例对象
+1. **用例导入** — CSV 上传 → 编码检测 → AI 预检补全 → 用户确认 → 结构化用例对象
 2. **元素探索** — 按用例步骤逐页导航（含登录）→ 收集可交互元素 → 输出探索报告
 3. **脚本生成** — 用例 + 元素地图 → AI 生成 Python/Playwright 脚本 → AST 预检
-4. **智能执行** — 执行脚本 → 失败时 AI 判断（选择器/Bug/其他）→ 修复或记录
-5. **结果分析** — AI 分类所有失败为系统 Bug / 脚本问题 / 环境问题
-6. **报告输出** — Markdown + JSON + 完整制品目录
+4. **智能执行** — 执行脚本 → 失败时 AI 判断（选择器/Bug/其他）→ 修复或记录 → 执行后 AI 结果分析
+5. **报告输出** — Markdown + JSON + 完整制品目录
 
 ## 测试用例状态机
 
@@ -49,7 +48,9 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 | BLOCKED | 页面不可达 / 元素严重缺失 / 需人工介入 |
 | ERROR | 脚本崩溃 / 环境异常 / 可重试 |
 
-所有终态都可触发重跑。
+所有终态都可触发重跑：
+- **快速重跑**：直接用已有脚本执行（适用 ERROR / 环境恢复后）
+- **完整重跑**：重新探索+生成+执行（适用产品更新后 / 元素大量变化）
 
 ## 模块设计
 
@@ -57,8 +58,13 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 - 输入：禅道格式 CSV
 - 自动检测编码 → 转 UTF-8
 - 校验必填列 → 缺失警告 + 跳过该行
-- 步骤格式模糊时交 AI 重构
-- 输出：结构化 TestCase 对象列表
+- **AI 预检补全**：导入后对每条用例做 AI 分析，评估步骤描述的完整度
+  - 步骤指向明确（含具体页面/按钮名称、操作路径）→ 直接通过
+  - 步骤指向模糊（如仅"点击编辑"未说明在哪里）→ 生成补全模板，标记"待补充"
+  - 补全模板包含：建议的目标页面路径、可选的选择器描述、补充说明输入框
+  - 用户填写补全后确认 → 进入用例库
+  - 未补全的用例在探索阶段降级为 AI 导航（探索引擎自行推断）
+- 输出：结构化 TestCase 对象列表（含完整度标记）
 
 ### 2. 会话管理器
 - 探索阶段执行登录 → 保存 Playwright storageState
@@ -68,6 +74,10 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 
 ### 3. 探索引擎
 - 深度探索：按用例步骤逐页导航
+- 导航策略：
+  - 已补全的用例 → 按补全后的页面路径精确导航
+  - 未补全的用例 → 从首页开始，按模块路径匹配导航层级 → AI 辅助推断目标页面
+  - 所有方式失败 → 标记 SKIPPED → 探索报告中展示
 - 每页收集可交互元素（tag/class/text/aria-label）
 - 等待策略：networkidle → domcontentloaded → 固定兜底
 - 弹窗自动处理（ESC / 点击关闭 / 点击蒙层）
@@ -99,9 +109,10 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 #### AI 决策三场景
 
 **选择器定位失败**（TimeoutError）
-- 截图 + DOM 摘要 → AI 判断 selector_changed / element_missing
-- selector_changed → AI 给新选择器 → 重试（同一选择器 ≤ 3 次）
-- element_missing → 记录 Bug → 标记 FAILED
+	- 先查自愈知识库（第 7 节）→ 命中直接复用 → 未命中再调 AI
+	- 截图 + DOM 摘要 → AI 判断 selector_changed / element_missing
+	- selector_changed → AI 给新选择器 → 重试成功写入知识库（同一选择器 ≤ 3 次）
+	- element_missing → 记录 Bug → 标记 FAILED
 
 **断言失败**
 - 实际结果 vs 预期结果 + 截图 → AI 判断 bug / expected_changed / assertion_inaccurate
@@ -113,8 +124,18 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 
 #### 异常状态处理
 - 单用例超时 5min → 强制终止 → 标记超时 → 继续
-- 浏览器崩溃 → 重启 → 恢复登录态 → 从断点继续
+- 浏览器崩溃 → 重启 → 恢复登录态 → 从该用例步骤 1 重跑（标记"崩溃重试"）→ 同一用例崩溃 2 次则跳过标记 ERROR
 - 连续失败熔断：min(3, 用例总数×20%) → 暂停 → AI 全局分析
+  - AI 判定环境问题 → 终止，通知用户检查环境
+  - AI 判定脚本问题 → 批量修复脚本 → 继续执行
+  - 无法判定 → 暂停，等待用户决定
+
+#### 执行后结果分析
+全部用例执行完成后，AI 汇总所有失败/错误/阻塞，进行分类：
+- **系统 Bug**：断言失败 + AI 判定 bug → 需开发修复
+- **脚本问题**：选择器自愈失败 + 脚本崩溃 → 需优化脚本/选择器
+- **环境问题**：网络超时 + 服务不可达 → 需检查环境
+- **用例问题**：预期变更 + 用例步骤不完整 → 需更新测试用例
 
 ### 7. 选择器自愈机制
 
@@ -200,6 +221,16 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 上传用例 → 启动测试 → 轮询状态 → 拉取报告
 ```
 所有操作通过 API 调用，凭据支持环境变量注入，浏览器支持 headless 模式。
+
+### 并发策略
+V1 阶段：串行执行队列。同一时间只允许一个测试任务运行，避免 Playwright 实例冲突和 SQLite 写入竞争。SQLite 启用 WAL 模式保证读写并发安全。后续版本再引入任务队列实现并行执行。
+
+### 补充端点
+```
+GET    /api/v1/healing              ← 查看自愈知识库
+DELETE /api/v1/healing/{id}         ← 删除失效记录
+POST   /api/v1/healing/clear        ← 清空知识库
+```
 
 ## 数据存储
 
