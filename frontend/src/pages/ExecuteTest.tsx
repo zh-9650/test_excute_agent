@@ -110,8 +110,8 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
           maxHeight: 300, overflow: "auto", fontFamily: "monospace", fontSize: 13 }}>
           {logs.map((l, i) => (
             <div key={i} style={{ lineHeight: 1.8 }}>
-              <span style={{ color: l.level === "error" ? "#f87171" : l.level === "warn" ? "#fbbf24" : "#6ee7b7" }}>
-                [{l.level.toUpperCase()}]
+              <span style={{ color: l.level === "error" ? "#f87171" : l.level === "warn" ? "#fbbf24" : l.level === "ai" ? "#93c5fd" : "#6ee7b7" }}>
+                [{l.level === "ai" ? "🤖 AI" : l.level.toUpperCase()}]
               </span>{" "}
               {l.msg}
             </div>

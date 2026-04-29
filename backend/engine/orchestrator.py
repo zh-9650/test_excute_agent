@@ -194,7 +194,8 @@ class Orchestrator:
             await browser.goto(state.target_url)
             await browser.wait_for_page_ready(strategy="domcontentloaded")
 
-            executor = SmartExecutor(ai=ai_provider, browser_controller=browser)
+            executor_log = lambda msg: self._log(state, "ai", msg)
+            executor = SmartExecutor(ai=ai_provider, browser_controller=browser, log_callback=executor_log)
 
             for case_id, script in state.scripts.items():
                 case = next((c for c in state.cases if c.id == case_id), None)
