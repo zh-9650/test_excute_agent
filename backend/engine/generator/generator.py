@@ -15,14 +15,20 @@ class ScriptGenerator:
                 url = step.enrichment.get("target_url", "") if step.enrichment else ""
                 steps_code.append(f'            await page.goto("{url}")')
             elif "点击" in action:
-                sel = f"'{selector}'" if selector else ""
-                steps_code.append(f'            await page.click({sel})')
+                if selector:
+                    steps_code.append(f"            await page.click('{selector}')")
+                else:
+                    steps_code.append(f'            # TODO: 选择器未知 — {action}')
             elif "输入" in action:
-                sel = f"'{selector}'" if selector else ""
-                steps_code.append(f'            await page.fill({sel}, "test_data")')
+                if selector:
+                    steps_code.append(f"            await page.fill('{selector}', 'test_data')")
+                else:
+                    steps_code.append(f'            # TODO: 选择器未知 — {action}')
             elif any(kw in action for kw in ["观察", "查看", "检查"]):
-                sel = f"'{selector}'" if selector else ""
-                steps_code.append(f'            await expect(page.locator({sel})).to_be_visible()')
+                if selector:
+                    steps_code.append(f"            await expect(page.locator('{selector}')).to_be_visible()")
+                else:
+                    steps_code.append(f'            # 观察: {action}')
 
         assertions = self._build_assertions(case.expected)
 
