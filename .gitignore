@@ -1,0 +1,10 @@
+.superpowers/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+node_modules/
+test_artifacts/
+*.db
+.DS_Store
