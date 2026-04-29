@@ -150,20 +150,27 @@ class Orchestrator:
     async def _explore(self, state: RunState, target_url: str, credentials: dict) -> dict:
         browser = BrowserController(headless=self.config.browser_headless)
         try:
-            await self._log(state, "info", "启动浏览器...")
+            await self._log(state, "info", "🌐 启动浏览器...")
             await browser.start()
 
-            # 会话管理
-            session = self.session_mgr.create(target_url, credentials.get("username", ""), credentials.get("password", ""))
-            await self._log(state, "info", "执行登录...")
-            await browser.goto(target_url)
-            await browser.wait_for_page_ready(strategy="domcontentloaded")
+            # 登录
+            username = credentials.get("username", "")
+            password = credentials.get("password", "")
+            session = self.session_mgr.create(target_url, username, password)
 
-            engine = ExplorationEngine(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None)
+            if username and password:
+                await self._log(state, "info", f"🔑 导航到目标地址并检测登录表单...")
+                await browser.goto(target_url)
+                await browser.wait_for_page_ready(strategy="domcontentloaded")
+
+                await self._detect_and_login(browser, state, username, password)
+            else:
+                await self._log(state, "info", "⚠️ 未提供凭据，跳过登录")
+
+            # 探索
+            explore_log = lambda msg: self._log(state, "info", msg)
+            engine = ExplorationEngine(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None, log_callback=explore_log)
             result = await engine.explore(state.cases, session, target_url)
-
-            report = engine.generate_exploration_report(result)
-            await self._log(state, "info", report)
 
             return {
                 "pages_explored": result.pages_explored,
@@ -176,6 +183,72 @@ class Orchestrator:
             return {"error": str(e), "pages_explored": [], "pages_skipped": []}
         finally:
             await browser.stop()
+
+    async def _detect_and_login(self, browser, state: RunState, username: str, password: str):
+        """检测登录表单并自动登录"""
+        page_summary = await browser.get_page_summary()
+        text = page_summary.get("text_snippet", "")
+
+        # 快速检测关键词
+        login_keywords = ["登录", "login", "sign in", "密码", "password", "用户名", "username"]
+        is_login_page = any(kw in text.lower() for kw in login_keywords)
+
+        if not is_login_page:
+            await self._log(state, "info", "  未检测到登录表单，跳过登录")
+            return
+
+        await self._log(state, "info", "  🔍 检测到登录表单，收集登录元素...")
+        elements = await browser.collect_interactive_elements()
+
+        # 找用户名/密码输入框和登录按钮
+        username_sel, password_sel, submit_sel = None, None, None
+        for el in elements:
+            attrs = f"{el.tag} {el.text} {el.aria_label} {' '.join(el.classes)}".lower()
+            if not username_sel and any(k in attrs for k in ["username", "用户名", "账号", "email", "邮箱"]):
+                username_sel = el.selector
+            if not password_sel and el.tag == "input" and "password" in attrs:
+                password_sel = el.selector
+            if not submit_sel and any(k in attrs for k in ["登录", "login", "sign", "提交", "submit"]):
+                submit_sel = el.selector
+
+        # 如果简单匹配失败，用 AI 识别
+        if not all([username_sel, password_sel, submit_sel]) and self.config.ai_api_key:
+            await self._log(state, "ai", "  简单匹配未找到完整登录表单，调用 AI 识别...")
+            try:
+                ai = self.config.create_provider()
+                elem_desc = [{"tag": e.tag, "text": e.text, "selector": e.selector, "aria": e.aria_label} for e in elements[:30]]
+                judgment = await ai.analyze(
+                    system_prompt="你是一个测试工程师。请从页面元素中识别登录表单。返回 JSON: {found: bool, username_selector: str, password_selector: str, submit_selector: str, reasoning: str}",
+                    user_prompt=f"元素列表：{elem_desc}\n目标：找到用户名输入框、密码输入框和登录按钮的选择器"
+                )
+                if judgment.action.get("username_selector"):
+                    username_sel = judgment.action["username_selector"]
+                if judgment.action.get("password_selector"):
+                    password_sel = judgment.action["password_selector"]
+                if judgment.action.get("submit_selector"):
+                    submit_sel = judgment.action["submit_selector"]
+            except Exception as e:
+                await self._log(state, "warn", f"  AI 识别登录表单失败: {e}")
+
+        # 执行登录
+        if username_sel and password_sel:
+            await self._log(state, "info", f"  ✏️ 填写账号: {username_sel}")
+            try:
+                await browser.page.fill(username_sel, username)
+                await self._log(state, "info", f"  ✏️ 填写密码: {password_sel}")
+                await browser.page.fill(password_sel, password)
+                if submit_sel:
+                    await self._log(state, "info", f"  🖱️ 点击登录: {submit_sel}")
+                    await browser.page.click(submit_sel)
+                    await browser.wait_for_page_ready(strategy="domcontentloaded")
+                    await self._log(state, "info", "  ✅ 登录完成")
+                else:
+                    await browser.page.keyboard.press("Enter")
+                    await self._log(state, "info", "  ✅ 按回车提交登录")
+            except Exception as e:
+                await self._log(state, "error", f"  ❌ 登录失败: {e}")
+        else:
+            await self._log(state, "warn", "  ⚠️ 无法识别登录表单元素，跳过登录")
 
     def _build_element_map(self, exploration: dict) -> dict:
         result = {}

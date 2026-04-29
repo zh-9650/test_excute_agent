@@ -13,9 +13,10 @@ class ExplorationResult:
 
 
 class ExplorationEngine:
-    def __init__(self, browser=None, ai=None):
+    def __init__(self, browser=None, ai=None, log_callback=None):
         self.browser = browser
         self.ai = ai
+        self._log = log_callback or (lambda msg: None)
 
     def build_plan(self, cases: list[TestCase]) -> dict:
         pages = {}
@@ -47,19 +48,41 @@ class ExplorationEngine:
         plan = self.build_plan(cases)
         result = ExplorationResult(exploration_id=exp_id)
 
-        for page_info in plan["pages"]:
+        await self._log(f"📋 探索计划: {plan['total_pages']} 个页面, {plan['total_cases']} 条用例")
+        page_descs = [f"{p['module']} ({len(p['cases'])}条用例)" for p in plan["pages"]]
+        await self._log(f"  目标页面: {', '.join(page_descs[:8])}{'...' if len(page_descs) > 8 else ''}")
+
+        for i, page_info in enumerate(plan["pages"]):
             page_url = self._resolve_url(target_url, page_info["url_hint"])
+            await self._log(f"  [{i+1}/{plan['total_pages']}] 导航到: {page_url}")
+
             nav_result = await self.browser.goto(page_url)
             if not nav_result["success"]:
+                reason = nav_result.get("error", "unknown")
+                await self._log(f"    ⚠️ 跳过: {reason}")
                 result.pages_skipped.append({
-                    "url": page_url, "reason": nav_result.get("error", "unknown"),
+                    "url": page_url, "reason": reason,
                     "module": page_info["module"]
                 })
                 continue
 
             await self.browser.dismiss_dialogs()
-            await self.browser.wait_for_page_ready(strategy="networkidle")
+            ready = await self.browser.wait_for_page_ready(strategy="networkidle")
+            if not ready:
+                await self._log(f"    ⏳ 页面未完全加载，降级等待...")
+                await self.browser.wait_for_page_ready(strategy="domcontentloaded")
+
+            await self._log(f"    🔎 收集可交互元素...")
             elements = await self.browser.collect_interactive_elements()
+
+            # 元素类型分布统计
+            tag_counts = {}
+            for e in elements:
+                tag_counts[e.tag] = tag_counts.get(e.tag, 0) + 1
+            tag_summary = " ".join([f"{tag}:{cnt}" for tag, cnt in sorted(tag_counts.items())])
+
+            await self._log(f"    ✅ 收集 {len(elements)} 个元素 [{tag_summary}]")
+
             result.pages_explored.append({
                 "url": self.browser.page.url, "module": page_info["module"],
                 "elements_found": len(elements),
@@ -70,6 +93,11 @@ class ExplorationEngine:
         explored = len(result.pages_explored)
         total = len(plan["pages"]) or 1
         result.coverage_score = explored / total
+
+        if result.pages_skipped:
+            await self._log(f"⚠️ {len(result.pages_skipped)} 个页面被跳过")
+        await self._log(f"📊 探索完成: {explored}/{total} 页面, {result.total_elements} 个元素, 覆盖率 {result.coverage_score:.0%}")
+
         return result
 
     def _resolve_url(self, base_url: str, hint: str) -> str:
