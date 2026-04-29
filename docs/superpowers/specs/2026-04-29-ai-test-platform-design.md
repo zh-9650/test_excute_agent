@@ -116,7 +116,35 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 - 浏览器崩溃 → 重启 → 恢复登录态 → 从断点继续
 - 连续失败熔断：min(3, 用例总数×20%) → 暂停 → AI 全局分析
 
-### 7. AI 成本控制
+### 7. 选择器自愈机制
+
+选择器失败时，在调用 AI 之前先查自愈知识库，减少重复 AI 调用，实现越跑越智能。
+
+#### 自愈知识库（healing_records 表）
+- `original_selector` — 原始选择器
+- `healed_selector` — 修复后的选择器
+- `page_url_pattern` — 页面 URL 模式（用于匹配同类页面）
+- `context_signature` — 周围 DOM 结构摘要（辅助精准匹配）
+- `strategy` — 修复策略（text_match / role_match / css_stable / xpath_fallback / compound）
+- `success_count` / `fail_count` — 质量跟踪
+- 查询排序：success_count DESC, last_used_at DESC
+- 自动淘汰：fail_count ≥ 3 删除记录
+
+#### 选择器失败决策流程
+```
+选择器定位失败 → 查知识库（按 original_selector + URL 模式）
+  ├─ 命中 → 用修复选择器重试
+  │    ├─ 成功 → success_count++ → 继续
+  │    └─ 失败 → fail_count++ → 超过 3 次删除 → 调 AI
+  └─ 未命中 → 调 AI 判断
+       ├─ selector_changed → new_selector 重试成功 → 写入知识库
+       └─ element_missing → 记录 Bug
+```
+
+#### 回归加速效果
+第 1 次执行选择器失败 → AI 修复 → 写入知识库；第 N 次回归同样问题直接命中，零 AI 调用。
+
+### 8. AI 成本控制
 | 策略 | 规则 |
 |------|------|
 | 同类型去重 | 同一选择器连续失败，后续用缓存 |
@@ -126,7 +154,7 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 | 置信度门禁 | < 0.5 不自动操作，标记"待人工确认" |
 | 全局熔断 | 全用例 AI 调用 > 总步骤数×2 → 停止，改规则引擎 |
 
-### 8. 报告生成器
+### 9. 报告生成器
 - Jinja2 模板驱动，章节可插拔
 - 章节：概览 / 失败用例 / 阻塞用例 / 错误用例 / 模块统计 / AI 决策摘要 / 环境信息
 - 主输出 Markdown + JSON（CI/CD 消费）
@@ -175,7 +203,7 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 
 ## 数据存储
 
-### SQLite（7 张表）
+### SQLite（8 张表）
 - `test_suites` — 用例集元数据
 - `test_cases` — 每条用例（步骤、预期、状态、优先级）
 - `test_runs` — 执行记录
@@ -183,6 +211,7 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 - `ai_calls` — AI 调用记录（场景、prompt、response、模型）
 - `element_map` — 元素地图
 - `exploration_logs` — 探索日志
+- `healing_records` — 选择器自愈知识库（原始选择器、修复选择器、URL 模式、策略、成败计数）
 
 ### 文件系统（制品目录）
 ```
