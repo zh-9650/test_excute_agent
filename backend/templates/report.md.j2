@@ -1,0 +1,69 @@
+# 测试报告
+
+**执行ID:** {{ run_id }}
+**目标地址:** {{ target_url }}
+**执行时间:** {{ started_at }} ~ {{ finished_at }}
+
+## 执行概况
+
+| 项目 | 值 |
+|------|-----|
+| 用例总数 | {{ summary.total }} |
+| 通过 | {{ summary.passed }} ({{ "%.1f"|format(summary.passed / summary.total * 100) if summary.total else 0 }}%) |
+| 失败 | {{ summary.failed }} |
+| 阻塞 | {{ summary.blocked }} |
+| 错误 | {{ summary.error }} |
+| AI 调用次数 | {{ ai_call_count }} |
+
+{% if failed_cases %}
+## 失败用例
+
+{% for case in failed_cases %}
+### {{ case.title }}
+| 字段 | 内容 |
+|------|------|
+| 模块 | {{ case.module }} |
+| 步骤 | {{ case.steps }} |
+| 预期 | {{ case.expected }} |
+| 实际 | {{ case.actual | default("未记录") }} |
+| AI 判定 | **{{ case.ai_judgment.type }}** (置信度 {{ case.ai_judgment.confidence }}) |
+{% if case.screenshot %}| 截图 | ![]({{ case.screenshot }}) |{% endif %}
+
+{% endfor %}
+{% endif %}
+
+{% if blocked_cases %}
+## 阻塞用例
+{% for case in blocked_cases %}
+- **{{ case.title }}** — {{ case.reason | default("页面不可达") }}
+{% endfor %}
+{% endif %}
+
+{% if error_cases %}
+## 错误用例
+{% for case in error_cases %}
+- **{{ case.title }}** — {{ case.reason | default("脚本异常") }}
+{% endfor %}
+{% endif %}
+
+## 模块统计
+
+| 模块 | 总数 | 通过 | 失败 | 阻塞 | 错误 |
+|------|------|------|------|------|------|
+{% for m in module_stats %}| {{ m.module }} | {{ m.total }} | {{ m.passed }} | {{ m.failed }} | {{ m.blocked }} | {{ m.error }} |
+{% endfor %}
+
+{% if ai_decisions %}
+## AI 决策摘要
+
+| # | 用例 | 场景 | 判定 | 置信度 |
+|---|------|------|------|--------|
+{% for d in ai_decisions %}| {{ loop.index }} | {{ d.case_id }} | {{ d.scenario }} | {{ d.judgment }} | {{ d.confidence }} |
+{% endfor %}
+{% endif %}
+
+## 环境信息
+
+- Playwright: {{ env_info.playwright | default("N/A") }}
+- 浏览器: {{ env_info.browser | default("N/A") }}
+- AI 模型: {{ env_info.ai_model | default("N/A") }}
