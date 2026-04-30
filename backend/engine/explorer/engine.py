@@ -53,18 +53,27 @@ class ExplorationEngine:
         await self._log(f"  Target pages: {', '.join(page_descs[:8])}{'...' if len(page_descs) > 8 else ''}")
 
         for i, page_info in enumerate(plan["pages"]):
-            page_url = self._resolve_url(target_url, page_info["url_hint"])
-            await self._log(f"  [{i+1}/{plan['total_pages']}] Navigating to: {page_url}")
+            # 按用例模块路径导航，而非直接用 target_url
+            module_path = page_info["url_hint"]
+            page_url = self._resolve_url(target_url, module_path)
+            await self._log(f"  [{i+1}/{plan['total_pages']}] Module: {page_info['module']} -> {page_url}")
 
-            nav_result = await self.browser.goto(page_url)
-            if not nav_result["success"]:
-                reason = nav_result.get("error", "unknown")
-                await self._log(f"    SKIPPED: {reason}")
-                result.pages_skipped.append({
-                    "url": page_url, "reason": reason,
-                    "module": page_info["module"]
-                })
-                continue
+            # 如果 URL 和当前页面不同，导航到目标模块
+            if page_url != self.browser.page.url:
+                nav_result = await self.browser.goto(page_url)
+                if not nav_result["success"]:
+                    reason = nav_result.get("error", "unknown")
+                    await self._log(f"    Page unreachable: {reason}. Trying base URL...")
+                    # 回退到主 URL
+                    nav_result = await self.browser.goto(target_url)
+                    if not nav_result["success"]:
+                        reason = nav_result.get("error", "unknown")
+                        await self._log(f"    SKIPPED: {reason}")
+                        result.pages_skipped.append({
+                            "url": page_url, "reason": reason,
+                            "module": page_info["module"]
+                        })
+                        continue
 
             await self.browser.dismiss_dialogs()
             ready = await self.browser.wait_for_page_ready(strategy="networkidle")
@@ -82,7 +91,6 @@ class ExplorationEngine:
 
             await self._log(f"    Collected {len(elements)} elements [{tag_summary}]")
 
-            # 截图
             import os
             screenshot_path = f"test_artifacts/{result.exploration_id}/screenshots/page_{i+1}.png"
             os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)

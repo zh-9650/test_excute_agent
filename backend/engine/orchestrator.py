@@ -259,71 +259,76 @@ class Orchestrator:
             await browser.stop()
 
     async def _detect_and_login(self, browser, state: RunState, username: str, password: str):
-        page_summary = await browser.get_page_summary()
-        text = page_summary.get("text_snippet", "")
-
-        login_keywords = ["login", "password", "username", "sign in"]
-        is_login_page = any(kw in text.lower() for kw in login_keywords)
-
-        if not is_login_page:
-            await self._log(state, "info", "  No login form detected, skipping login")
-            return
-
-        await self._log(state, "info", "  Login form detected, collecting elements...")
+        """检测登录表单并自动登录（支持中英文）"""
+        await self._log(state, "info", "  Scanning for login form...")
         elements = await browser.collect_interactive_elements()
 
+        # 直接找 input 类型：密码框存在 = 登录页
+        has_password_input = any(e.tag == "input" for e in elements)
+        if not has_password_input:
+            # 也检查页面文本
+            page_summary = await browser.get_page_summary()
+            text = page_summary.get("text_snippet", "").lower()
+            login_keywords = ["login", "password", "sign in", "登 录", "登录", "密码", "用户名", "账 号", "账号"]
+            if not any(kw in text for kw in login_keywords):
+                await self._log(state, "info", "  No login form detected, skipping login")
+                return
+
+        await self._log(state, "info", f"  Login form detected ({len(elements)} elements), identifying fields...")
+
+        # 找输入框：第一个 text/email 类型 = 用户名，password 类型 = 密码
         username_sel, password_sel, submit_sel = None, None, None
         for el in elements:
             attrs = f"{el.tag} {el.text} {el.aria_label} {' '.join(el.classes)}".lower()
-            if not username_sel and any(k in attrs for k in ["username", "email", "account"]):
-                username_sel = el.selector
+            if not username_sel and el.tag == "input":
+                # 第一个非密码输入框就是用户名
+                if "password" not in attrs:
+                    username_sel = el.selector
+                    await self._log(state, "info", f"  Found username: {el.selector}")
             if not password_sel and el.tag == "input" and "password" in attrs:
                 password_sel = el.selector
-            if not submit_sel and any(k in attrs for k in ["login", "sign", "submit"]):
-                submit_sel = el.selector
+                await self._log(state, "info", f"  Found password: {el.selector}")
+            if not submit_sel and el.tag == "button":
+                txt = (el.text + el.aria_label).lower()
+                if any(k in txt for k in ["login", "sign", "submit", "登录", "登 录", "确 认", "确认"]):
+                    submit_sel = el.selector
+                    await self._log(state, "info", f"  Found submit: {el.selector}")
 
-        if not all([username_sel, password_sel, submit_sel]) and self.config.ai_api_key:
-            await self._log(state, "ai", "  Using AI to identify login form...")
-            try:
-                ai = self.config.create_provider()
-                elem_desc = [{"tag": e.tag, "text": e.text[:50], "selector": e.selector} for e in elements[:30]]
-                judgment = await ai.analyze(
-                    system_prompt="You are a test engineer. Identify login form elements. Return JSON: {found: bool, username_selector: str, password_selector: str, submit_selector: str, reasoning: str}",
-                    user_prompt=f"Elements: {json.dumps(elem_desc, ensure_ascii=False)}"
-                )
-                if judgment.action.get("username_selector"):
-                    username_sel = judgment.action["username_selector"]
-                if judgment.action.get("password_selector"):
-                    password_sel = judgment.action["password_selector"]
-                if judgment.action.get("submit_selector"):
-                    submit_sel = judgment.action["submit_selector"]
-            except Exception as e:
-                await self._log(state, "warn", f"  AI login detection failed: {e}")
+        # 如果找不到 submit，用最后一个 button 或 Enter 键
+        if not submit_sel:
+            buttons = [e for e in elements if e.tag == "button"]
+            if buttons:
+                submit_sel = buttons[-1].selector
+                await self._log(state, "info", f"  Using last button as submit: {submit_sel}")
 
-        if username_sel and password_sel:
-            await self._log(state, "info", f"  Filling username: {username_sel}")
-            try:
-                await browser.page.fill(username_sel, username)
-                await self._log(state, "info", f"  Filling password: {password_sel}")
-                await browser.page.fill(password_sel, password)
-                if submit_sel:
-                    await self._log(state, "info", f"  Clicking login: {submit_sel}")
-                    await browser.page.click(submit_sel)
-                    await browser.wait_for_page_ready(strategy="domcontentloaded")
-                    await self._log(state, "info", "  Login completed")
-                    # 保存登录态供后续步骤使用
-                    cookies = await browser.page.context.cookies()
-                    self.session_mgr.save_storage_state(session.id, {"cookies": cookies})
-                    await self._log(state, "info", "  Login state saved")
-                else:
-                    await browser.page.keyboard.press("Enter")
-                    await self._log(state, "info", "  Pressed Enter to submit")
-                    cookies = await browser.page.context.cookies()
-                    self.session_mgr.save_storage_state(session.id, {"cookies": cookies})
-            except Exception as e:
-                await self._log(state, "error", f"  Login failed: {e}")
-        else:
-            await self._log(state, "warn", "  Could not identify login form elements, skipping login")
+        if not username_sel or not password_sel:
+            await self._log(state, "warn", "  Could not identify all login fields, trying with common selectors")
+            # 尝试常见选择器
+            username_sel = "input[type='text']" if not username_sel else username_sel
+            password_sel = "input[type='password']" if not password_sel else password_sel
+
+        try:
+            await self._log(state, "info", f"  Filling username '{username}' into {username_sel}")
+            await browser.page.fill(username_sel, username)
+            await self._log(state, "info", f"  Filling password into {password_sel}")
+            await browser.page.fill(password_sel, password)
+
+            if submit_sel:
+                await self._log(state, "info", f"  Clicking login: {submit_sel}")
+                await browser.page.click(submit_sel)
+            else:
+                await browser.page.keyboard.press("Enter")
+                await self._log(state, "info", "  Pressed Enter to submit")
+
+            await browser.wait_for_page_ready(strategy="domcontentloaded")
+            await self._log(state, "info", "  Login completed")
+
+            # 保存登录态
+            cookies = await browser.page.context.cookies()
+            self.session_mgr.save_storage_state(session.id, {"cookies": cookies})
+            await self._log(state, "info", "  Login state saved")
+        except Exception as e:
+            await self._log(state, "error", f"  Login failed: {e}")
 
     def _build_element_map(self, exploration: dict) -> dict:
         result = {}
