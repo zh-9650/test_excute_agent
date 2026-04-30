@@ -12,14 +12,13 @@ def test_generate_markdown_report():
         "summary": {"total": 10, "passed": 8, "failed": 1, "blocked": 1, "error": 0},
         "module_stats": [{"module": "/场景管理", "total": 10, "passed": 8, "failed": 1, "blocked": 1, "error": 0}],
         "failed_cases": [{
-            "case_id": "1", "module": "/场景", "title": "全选删除",
-            "steps": "1. 全选 2. 删除", "expected": "全部删除",
-            "actual": "按钮无响应",
-            "ai_judgment": {"type": "bug", "confidence": 0.91},
-            "screenshot": "shots/c1.png"
+            "case_id": "1", "module": "/场景", "case_title": "全选删除",
+            "step": 1, "action": "全选删除",
+            "ai_judgment": "bug", "ai_confidence": 0.91,
+            "ai_reasoning": "按钮无响应", "screenshot": "shots/c1.png"
         }],
         "blocked_cases": [], "error_cases": [],
-        "ai_decisions": [{"case_id": "1", "scenario": "selector_failure", "judgment": "bug", "confidence": 0.91}],
+        "ai_decisions": [{"case_id": "1", "case_title": "全选删除", "scenario": "selector_failure", "judgment": "bug", "confidence": 0.91, "reasoning": "button disappeared"}],
         "ai_call_count": 3,
         "env_info": {"playwright": "1.52", "browser": "Chromium"}
     }
