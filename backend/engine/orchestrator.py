@@ -85,6 +85,14 @@ class Orchestrator:
         exploration = await self._explore(state, target_url, credentials)
         state.exploration_result = exploration
 
+        # 如果目标完全不可达，直接终止
+        if exploration.get("error"):
+            state.status = "failed"
+            state.end_time = time.time()
+            await self._log(state, "error", f"Target unreachable: {exploration['error']}")
+            await self._log(state, "error", "Test aborted - cannot reach target URL")
+            return state
+
         # Phase 2: Script Generation
         state.status = "generating"
         await self._log(state, "info", "--- Phase 2: Script Generation ---")
@@ -168,7 +176,10 @@ class Orchestrator:
 
             if username and password:
                 await self._log(state, "info", f"Navigating to {target_url} and detecting login form...")
-                await browser.goto(target_url)
+                goto_result = await browser.goto(target_url)
+                if not goto_result["success"]:
+                    await self._log(state, "error", f"Cannot reach target URL: {goto_result.get('error', 'unknown')}")
+                    return {"error": f"Cannot reach {target_url}: {goto_result.get('error')}", "pages_explored": [], "pages_skipped": []}
                 await browser.wait_for_page_ready(strategy="domcontentloaded")
                 await self._detect_and_login(browser, state, username, password)
             else:

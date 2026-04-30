@@ -164,7 +164,6 @@ async def run_tests(payload: dict):
         raise HTTPException(400, "suite_id and target_url are required")
 
     cfg = Config()
-    cfg.browser_headless = True  # 服务端执行强制无头模式
     orchestrator = Orchestrator(config=cfg, log_callback=_websocket_log)
 
     run_id = str(uuid.uuid4())[:8]
