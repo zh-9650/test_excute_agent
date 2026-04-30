@@ -5,7 +5,7 @@ from backend.models.case import TestCase, Step
 def test_execution_context_creation():
     case = TestCase(id="c1", suite_id="s1", module="/", title="test",
                     steps=[Step(1, "click button")], expected="ok")
-    ctx = ExecutionContext(case=case, script="print('hello')", session_id="sess1")
+    ctx = ExecutionContext(case=case, session_id="sess1")
     assert ctx.ai_call_count == 0
     assert ctx.retry_count == 0
 
@@ -23,13 +23,16 @@ def test_executor_analyzes_selector_failure():
 
 def test_executor_classifies_failures():
     exe = SmartExecutor(ai=None)
-    summary = [
-        {"case_id": "1", "status": "failed", "ai_judgment": "bug", "ai_confidence": 0.9},
-        {"case_id": "2", "status": "failed", "ai_judgment": "selector_changed", "ai_confidence": 0.8},
-        {"case_id": "3", "status": "blocked", "ai_judgment": None},
-        {"case_id": "4", "status": "error", "ai_judgment": "script_error"},
+    results = [
+        {"case_id": "1", "status": "failed", "steps": [
+            {"step": 1, "ai_judgment": "bug", "ai_confidence": 0.9},
+            {"step": 2, "ai_judgment": "selector_changed", "ai_confidence": 0.8},
+        ]},
+        {"case_id": "2", "status": "error", "steps": [
+            {"step": 1, "ai_judgment": "environment_error"},
+        ]},
     ]
-    analysis = exe.classify_results(summary)
+    analysis = exe.classify_results(results)
     assert len(analysis["bugs"]) == 1
-    assert len(analysis["script_issues"]) == 2
-    assert len(analysis["environment_issues"]) == 1  # blocked case without judgment
+    assert len(analysis["script_issues"]) == 1
+    assert len(analysis["environment_issues"]) == 1

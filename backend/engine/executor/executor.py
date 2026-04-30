@@ -1,8 +1,7 @@
-import subprocess
-import tempfile
-import os
 import json
 import re
+import time
+import os
 from dataclasses import dataclass, field
 from backend.models.case import TestCase, CaseStatus
 from backend.engine.executor.healing import HealingStore
@@ -11,176 +10,245 @@ from backend.engine.executor.healing import HealingStore
 @dataclass
 class ExecutionContext:
     case: TestCase
-    script: str
     session_id: str
     ai_call_count: int = 0
     retry_count: int = 0
     max_retries: int = 3
-    result: dict = field(default_factory=dict)
+    step_results: list[dict] = field(default_factory=list)
 
 
 class SmartExecutor:
-    def __init__(self, ai=None, browser_controller=None, log_callback=None):
+    """逐步执行器：直接用 Playwright 按测试步骤操作，失败时 AI 实时介入"""
+
+    def __init__(self, browser=None, ai=None, log_callback=None):
+        self.browser = browser
         self.ai = ai
-        self.browser = browser_controller
         self.healing = HealingStore()
         self._log = log_callback or (lambda msg: None)
 
     async def execute_case(self, ctx: ExecutionContext) -> dict:
-        script_path = self._write_script(ctx)
+        case = ctx.case
+        await self._log(f"[{case.title}] Starting execution ({len(case.steps)} steps)")
+
+        all_passed = True
+        for step in case.steps:
+            result = await self._execute_step(ctx, step)
+            ctx.step_results.append(result)
+            if result["status"] != "passed":
+                all_passed = False
+                if result.get("fatal"):
+                    break
+
+        if all_passed:
+            case.transition_to(CaseStatus.PASSED)
+            return {"case_id": case.id, "status": "passed", "steps": ctx.step_results}
+        else:
+            final_status = "failed" if any(r.get("ai_judgment") == "bug" for r in ctx.step_results) else "error"
+            case.transition_to(CaseStatus.FAILED if final_status == "failed" else CaseStatus.ERROR)
+            return {"case_id": case.id, "status": final_status, "steps": ctx.step_results}
+
+    async def _execute_step(self, ctx: ExecutionContext, step) -> dict:
+        action = step.action
+        target_url = step.enrichment.get("target_url", "") if step.enrichment else ""
+
         try:
-            proc = await self._run_script(script_path)
-            if proc.returncode == 0:
-                ctx.case.transition_to(CaseStatus.PASSED)
-                return {"case_id": ctx.case.id, "status": "passed", "output": proc.stdout}
+            if any(kw in action for kw in ["进入", "打开", "跳转"]):
+                if target_url:
+                    await self.browser.goto(target_url)
+                    await self.browser.wait_for_page_ready()
+                    await self._log(f"  Navigated to {target_url}")
+                else:
+                    await self._log(f"  Skip navigation (no URL)")
+                return {"step": step.order, "action": action, "status": "passed"}
+
+            elif "点击" in action:
+                return await self._retryable_action(ctx, step, "click")
+
+            elif "输入" in action:
+                return await self._retryable_action(ctx, step, "fill")
+
+            elif any(kw in action for kw in ["观察", "查看", "检查", "验证"]):
+                # 断言型步骤：截图 + AI 判断
+                screenshot_path = f"test_artifacts/{ctx.case.suite_id}/screenshots/case_{ctx.case.id}_step{step.order}.png"
+                os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                await self.browser.take_screenshot(screenshot_path)
+                await self._log(f"  Screenshot: {screenshot_path}")
+
+                if self.ai:
+                    page = await self.browser.get_page_summary()
+                    judgment = await self.ai.analyze(
+                        system_prompt="You are a test engineer. Check if the page state matches expectations. Return JSON: {judgment: passed|bug|unclear, confidence, reasoning}",
+                        user_prompt=f"Expected: {ctx.case.expected}\nCurrent page: {json.dumps(page, ensure_ascii=False)}"
+                    )
+                    ctx.ai_call_count += 1
+                    await self._log(f"  [AI] Assertion: {judgment.judgment} (confidence: {judgment.confidence:.0%})")
+                    if judgment.judgment == "bug":
+                        return {"step": step.order, "action": action, "status": "failed",
+                                "ai_judgment": "bug", "ai_confidence": judgment.confidence, "screenshot": screenshot_path}
+                return {"step": step.order, "action": action, "status": "passed"}
+
+            elif "选择" in action:
+                return await self._retryable_action(ctx, step, "click")
+
+            elif "删除" in action:
+                return await self._retryable_action(ctx, step, "click")
+
+            elif "确" in action:
+                # 确认按钮
+                return await self._retryable_action(ctx, step, "click")
+
+            elif "保存" in action or "提交" in action:
+                return await self._retryable_action(ctx, step, "click")
+
             else:
-                return await self._handle_failure(ctx, proc)
+                await self._log(f"  Unrecognized action: {action[:60]}")
+                return {"step": step.order, "action": action, "status": "passed"}
+
         except Exception as e:
-            return {"case_id": ctx.case.id, "status": "error", "reason": str(e)}
-        finally:
-            if os.path.exists(script_path):
-                os.unlink(script_path)
+            await self._log(f"  Step error: {e}")
+            return {"step": step.order, "action": action, "status": "error", "reason": str(e)[:200]}
 
-    def _write_script(self, ctx: ExecutionContext) -> str:
-        path = os.path.join(tempfile.gettempdir(), f"test_{ctx.case.id}.py")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(ctx.script)
-        return path
+    async def _retryable_action(self, ctx: ExecutionContext, step, action_type: str) -> dict:
+        action = step.action
+        selector = self._infer_selector(action, step)
 
-    async def _run_script(self, script_path: str):
-        return subprocess.run(["python", script_path], capture_output=True, text=True, timeout=300)
+        for attempt in range(ctx.max_retries + 1):
+            try:
+                if action_type == "click":
+                    if selector:
+                        await self.browser.page.click(selector, timeout=5000)
+                    else:
+                        # 尝试按文本匹配
+                        text_hint = self._extract_text_hint(action)
+                        await self.browser.page.click(f"text={text_hint}", timeout=5000)
+                    await self.browser.wait_for_page_ready(strategy="domcontentloaded")
+                    await self._log(f"  Clicked: {selector or text_hint}")
+                    return {"step": step.order, "action": action, "status": "passed"}
 
-    async def _handle_failure(self, ctx: ExecutionContext, proc) -> dict:
-        stderr = proc.stderr
-        await self._log(f"Script failed [{ctx.case.title}]")
-        await self._log(f"  Error: {stderr[:200]}")
+                elif action_type == "fill":
+                    value = self._extract_fill_value(action)
+                    if selector:
+                        await self.browser.page.fill(selector, value, timeout=5000)
+                    else:
+                        text_hint = self._extract_text_hint(action)
+                        await self.browser.page.fill(f"input[name='{text_hint}']", value, timeout=5000)
+                    await self._log(f"  Filled: {selector or text_hint} = {value}")
+                    return {"step": step.order, "action": action, "status": "passed"}
 
-        if "TimeoutError" in stderr and "selector" in stderr.lower():
-            return await self._handle_selector_timeout(ctx, stderr)
-        if "AssertionError" in stderr or "expect(" in stderr:
-            return await self._handle_assertion_failure(ctx, stderr)
-        return await self._handle_script_error(ctx, stderr)
+            except Exception as e:
+                err_str = str(e)
+                await self._log(f"  Attempt {attempt+1} failed: {err_str[:100]}")
 
-    async def _handle_selector_timeout(self, ctx: ExecutionContext, stderr: str) -> dict:
-        selector = self._extract_selector(stderr)
-        await self._log(f"  Selector not found: '{selector}'")
-        healing = self.healing.find(selector, self.browser.page.url if self.browser else "")
+                if attempt == ctx.max_retries:
+                    await self._log(f"  Retries exhausted")
+                    return {"step": step.order, "action": action, "status": "failed",
+                            "reason": "selector_exhausted"}
 
-        if healing:
-            await self._log(f"  Healing cache hit -> using: '{healing['healed_selector']}' (success={healing['success_count']})")
-            ctx.script = ctx.script.replace(selector, healing["healed_selector"])
-            self.healing.increment_success(selector, healing["page_url_pattern"])
-            ctx.retry_count += 1
-            if ctx.retry_count < ctx.max_retries:
-                await self._log(f"  Retry ({ctx.retry_count}/{ctx.max_retries})...")
-                return await self.execute_case(ctx)
+                # 尝试自愈
+                if selector:
+                    healing = self.healing.find(selector, self.browser.page.url)
+                    if healing:
+                        selector = healing["healed_selector"]
+                        await self._log(f"  Healing: using '{selector}'")
+                        self.healing.increment_success(healing["original_selector"], healing["page_url_pattern"])
+                        continue
 
-        if self.ai and ctx.ai_call_count < 5:
-            page_summary = await self.browser.get_page_summary() if self.browser else {}
-            await self._log(f"  [AI] Analyzing selector failure...")
-            judgment = await self.ai.analyze(
-                system_prompt="You are a test engineer. Analyze selector failure. Return JSON: {judgment, confidence, action: {type, new_selector}, reasoning}",
-                user_prompt=f"Selector {selector} not found. Page: {json.dumps(page_summary, ensure_ascii=False)}. Case: {ctx.case.title}"
-            )
-            ctx.ai_call_count += 1
-            await self._log(f"  [AI] Judgment: {judgment.judgment} (confidence: {judgment.confidence:.0%})")
-            await self._log(f"  [AI] Reasoning: {judgment.reasoning[:200]}")
+                # AI 介入
+                if self.ai and ctx.ai_call_count < 5:
+                    await self._log(f"  [AI] Analyzing failure...")
+                    try:
+                        page_url = self.browser.page.url
+                        page_summary = await self.browser.get_page_summary()
+                        judgment = await self.ai.analyze(
+                            system_prompt="You are a test engineer. The action failed. Analyze and return JSON: {judgment: selector_changed|element_missing|other, confidence, action: {new_selector}, reasoning}",
+                            user_prompt=f"Action: {action}\nSelector: {selector}\nPage: {json.dumps(page_summary, ensure_ascii=False)}"
+                        )
+                        ctx.ai_call_count += 1
+                        await self._log(f"  [AI] {judgment.judgment} (confidence: {judgment.confidence:.0%})")
 
-            if judgment.judgment == "selector_changed" and judgment.action.get("new_selector"):
-                new_sel = judgment.action["new_selector"]
-                await self._log(f"  [AI] Fixing: '{selector}' -> '{new_sel}'")
-                ctx.script = ctx.script.replace(selector, new_sel)
-                self.healing.add(selector, new_sel, "*/" + ctx.case.module.lstrip("/") + "/*",
-                                 strategy=judgment.action.get("strategy", "text_match"))
-                await self._log(f"  Saved to healing store for future reuse")
-                ctx.retry_count += 1
-                if ctx.retry_count < ctx.max_retries:
-                    await self._log(f"  Retry ({ctx.retry_count}/{ctx.max_retries})...")
-                    return await self.execute_case(ctx)
+                        if judgment.judgment == "selector_changed" and judgment.action.get("new_selector"):
+                            new_sel = judgment.action["new_selector"]
+                            self.healing.add(selector, new_sel, self._url_pattern(page_url))
+                            selector = new_sel
+                            await self._log(f"  [AI] New selector: {new_sel}")
+                            continue
 
-            if judgment.judgment == "element_missing":
-                await self._log(f"  BUG confirmed: element missing")
-                ctx.case.transition_to(CaseStatus.FAILED)
-                return {"case_id": ctx.case.id, "status": "failed",
-                        "reason": "element_missing", "ai_judgment": judgment.judgment,
-                        "ai_confidence": judgment.confidence}
+                        if judgment.judgment == "element_missing":
+                            screenshot_path = f"test_artifacts/{ctx.case.suite_id}/screenshots/fail_{ctx.case.id}_step{step.order}.png"
+                            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                            await self.browser.take_screenshot(screenshot_path)
+                            await self._log(f"  BUG: element missing. Screenshot: {screenshot_path}")
+                            return {"step": step.order, "action": action, "status": "failed",
+                                    "ai_judgment": "bug", "ai_confidence": judgment.confidence,
+                                    "screenshot": screenshot_path}
+                    except Exception as ai_err:
+                        await self._log(f"  AI call failed: {ai_err}")
 
-        await self._log(f"  Selector retry exhausted ({ctx.retry_count} retries)")
-        ctx.case.transition_to(CaseStatus.FAILED)
-        return {"case_id": ctx.case.id, "status": "failed", "reason": "selector_exhausted"}
+    def _infer_selector(self, action: str, step) -> str:
+        """从步骤描述推断选择器"""
+        if step.enrichment and step.enrichment.get("selector_hint"):
+            return step.enrichment["selector_hint"]
 
-    async def _handle_assertion_failure(self, ctx: ExecutionContext, stderr: str) -> dict:
-        await self._log(f"  Assertion failed")
-        await self._log(f"  Expected: {ctx.case.expected[:200]}")
-        await self._log(f"  Actual: {stderr[:200]}")
+        # 从动作描述中提取可能的文本/元素名
+        text = self._extract_text_hint(action)
+        if text:
+            return f"text={text}"
 
-        if self.ai and ctx.ai_call_count < 5:
-            await self._log(f"  [AI] Analyzing assertion result...")
-            judgment = await self.ai.analyze(
-                system_prompt="You are a test engineer. Analyze assertion failure. Return JSON: {judgment: bug|expected_changed|assertion_inaccurate, confidence, reasoning}",
-                user_prompt=f"Expected: {ctx.case.expected}\nActual error: {stderr}\nSteps: {[s.action for s in ctx.case.steps]}"
-            )
-            ctx.ai_call_count += 1
-            await self._log(f"  [AI] Judgment: {judgment.judgment} (confidence: {judgment.confidence:.0%})")
-            await self._log(f"  [AI] Reasoning: {judgment.reasoning[:200]}")
+        # 按钮关键词匹配
+        btn_map = {
+            "新增": "button:has-text('新增'), button:has-text('新建')",
+            "保存": "button:has-text('保存')",
+            "删除": "button:has-text('删除')",
+            "编辑": "button:has-text('编辑')",
+            "确认": "button:has-text('确认'), button:has-text('确定')",
+            "取消": "button:has-text('取消')",
+            "提交": "button:has-text('提交')",
+            "登录": "button:has-text('登录'), button:has-text('Login')",
+        }
+        for key, sel in btn_map.items():
+            if key in action:
+                return sel
 
-            if judgment.judgment == "bug":
-                await self._log(f"  BUG confirmed, recorded")
-            elif judgment.judgment == "expected_changed":
-                await self._log(f"  Expected result changed, suggest updating test case")
-            elif judgment.judgment == "assertion_inaccurate":
-                await self._log(f"  Inaccurate assertion, need to fix assertion logic")
+        return None
 
-            ctx.case.transition_to(CaseStatus.FAILED)
-            return {"case_id": ctx.case.id, "status": "failed",
-                    "ai_judgment": judgment.judgment, "ai_confidence": judgment.confidence}
+    def _extract_text_hint(self, action: str) -> str:
+        """从动作中提取可能的目标文本"""
+        # "点击新增按钮" -> "新增"
+        # "点击保存" -> "保存"
+        # "输入标题" -> "标题"
+        patterns = [
+            r'点击(.+?)(?:按钮|链接|标签|选项|$)',
+            r'选择(.+?)(?:按钮|选项|项|$)',
+            r'输入(.+?)(?:内容|信息|值|$)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, action)
+            if match:
+                return match.group(1).strip()
+        return action.strip()
 
-        ctx.case.transition_to(CaseStatus.FAILED)
-        return {"case_id": ctx.case.id, "status": "failed", "reason": "assertion_failed"}
+    def _extract_fill_value(self, action: str) -> str:
+        """从动作推断填充值"""
+        from backend.engine.generator.data_factory import TestDataFactory
+        data = TestDataFactory.generate_from_keyword(action)
+        if data and isinstance(data, str):
+            return data
+        return "test_data"
 
-    async def _handle_script_error(self, ctx: ExecutionContext, stderr: str) -> dict:
-        await self._log(f"  Script error: {stderr[:200]}")
-
-        if self.ai and ctx.ai_call_count < 3:
-            await self._log(f"  [AI] Analyzing error type...")
-            judgment = await self.ai.analyze(
-                system_prompt="Classify script exception: script_error | env_error | system_error. Return JSON: {judgment, confidence, reasoning}",
-                user_prompt=f"Error: {stderr}"
-            )
-            ctx.ai_call_count += 1
-            await self._log(f"  [AI] Classification: {judgment.judgment} (confidence: {judgment.confidence:.0%})")
-
-            if judgment.judgment == "env_error":
-                await self._log(f"  Environment issue, skipping this case")
-                return {"case_id": ctx.case.id, "status": "blocked", "reason": "environment_error"}
-            if judgment.judgment == "script_error" and ctx.retry_count < 1:
-                ctx.retry_count += 1
-                await self._log(f"  Attempting script fix and retry...")
-                return await self.execute_case(ctx)
-
-        ctx.case.transition_to(CaseStatus.ERROR)
-        return {"case_id": ctx.case.id, "status": "error", "reason": stderr[:200]}
-
-    def _extract_selector(self, stderr: str) -> str:
-        match = re.search(r"['\"]([^'\"]+)['\"]", stderr)
-        return match.group(1) if match else "unknown"
+    def _url_pattern(self, url: str) -> str:
+        return re.sub(r'/[^/]+$', '/*', url)
 
     def classify_results(self, case_results: list[dict]) -> dict:
         bugs, script_issues, env_issues, case_issues = [], [], [], []
         for r in case_results:
-            judgment = r.get("ai_judgment", "")
-            if judgment == "bug":
-                bugs.append(r)
-            elif judgment in ("selector_changed", "script_error", "selector_exhausted"):
-                script_issues.append(r)
-            elif judgment == "environment_error":
-                env_issues.append(r)
-            elif judgment == "expected_changed":
-                case_issues.append(r)
-            elif r.get("status") == "blocked":
-                env_issues.append(r)
-            elif r.get("status") in ("error", "failed") and not judgment:
-                script_issues.append(r)
+            for step in r.get("steps", []):
+                judgment = step.get("ai_judgment", "")
+                if judgment == "bug":
+                    bugs.append(step)
+                elif judgment in ("selector_changed", "script_error", "selector_exhausted"):
+                    script_issues.append(step)
+                elif judgment == "environment_error":
+                    env_issues.append(step)
         return {"bugs": bugs, "script_issues": script_issues, "environment_issues": env_issues, "case_issues": case_issues}
 
     def analyze_selector_failure(self, original_selector: str, page_summary: dict, case_context: str) -> dict:

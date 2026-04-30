@@ -175,8 +175,33 @@ class Orchestrator:
         return exploration
 
     async def execute_only(self, state: RunState):
-        """仅执行：用已有脚本执行测试"""
-        await self._execute_all(state, {})
+        """仅执行：逐步调用 Playwright 执行每个用例的步骤"""
+        browser = BrowserController(headless=self.config.browser_headless)
+        try:
+            await browser.start()
+            # 恢复登录态
+            await browser.goto(state.target_url)
+            await browser.wait_for_page_ready()
+
+            executor_log = lambda msg: self._log(state, "ai", msg)
+            executor = SmartExecutor(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None, log_callback=executor_log)
+
+            for case in state.cases:
+                if case.id not in state.scripts and case.completeness not in ("complete", "enriched"):
+                    continue
+
+                await self._log(state, "info", f"Executing: {case.title}")
+                case.transition_to(CaseStatus.RUNNING)
+
+                ctx = ExecutionContext(case=case, session_id="")
+                result = await executor.execute_case(ctx)
+                state.case_results.append(result)
+                state.ai_call_count += ctx.ai_call_count
+
+                icon = "PASS" if result["status"] == "passed" else "FAIL" if result["status"] == "failed" else "WARN"
+                await self._log(state, "info", f"  [{icon}] {case.title}")
+        finally:
+            await browser.stop()
 
     async def _explore(self, state: RunState, target_url: str, credentials: dict) -> dict:
         browser = BrowserController(headless=self.config.browser_headless)
@@ -287,34 +312,30 @@ class Orchestrator:
         return result
 
     async def _execute_all(self, state: RunState, credentials: dict):
-        ai_provider = self.config.create_provider() if self.config.ai_api_key else None
         browser = BrowserController(headless=self.config.browser_headless)
 
         try:
             await browser.start()
             await browser.goto(state.target_url)
-            await browser.wait_for_page_ready(strategy="domcontentloaded")
+            await browser.wait_for_page_ready()
 
             executor_log = lambda msg: self._log(state, "ai", msg)
-            executor = SmartExecutor(ai=ai_provider, browser_controller=browser, log_callback=executor_log)
+            executor = SmartExecutor(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None, log_callback=executor_log)
 
-            for case_id, script in state.scripts.items():
-                case = next((c for c in state.cases if c.id == case_id), None)
-                if not case:
+            for case in state.cases:
+                if case.completeness not in ("complete", "enriched"):
                     continue
 
                 await self._log(state, "info", f"Executing: {case.title}")
                 case.transition_to(CaseStatus.RUNNING)
 
-                ctx = ExecutionContext(case=case, script=script, session_id="")
+                ctx = ExecutionContext(case=case, session_id="")
                 result = await executor.execute_case(ctx)
                 state.case_results.append(result)
                 state.ai_call_count += ctx.ai_call_count
 
-                status = result.get("status", "error")
-                icon = "PASS" if status == "passed" else "FAIL" if status == "failed" else "WARN"
-                ai_info = f" [AI: {result.get('ai_judgment', 'N/A')}]" if result.get("ai_judgment") else ""
-                await self._log(state, "info", f"  [{icon}] {case.title}{ai_info}")
+                icon = "PASS" if result["status"] == "passed" else "FAIL" if result["status"] == "failed" else "WARN"
+                await self._log(state, "info", f"  [{icon}] {case.title}")
 
         except Exception as e:
             import traceback
