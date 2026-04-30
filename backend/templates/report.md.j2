@@ -16,18 +16,19 @@
 | AI 调用次数 | {{ ai_call_count }} |
 
 {% if failed_cases %}
-## 失败用例
+## 失败用例详情
 
 {% for case in failed_cases %}
-### {{ case.title }}
+### {{ case.case_title }}
 | 字段 | 内容 |
 |------|------|
 | 模块 | {{ case.module }} |
-| 步骤 | {{ case.steps }} |
-| 预期 | {{ case.expected }} |
-| 实际 | {{ case.actual | default("未记录") }} |
-| AI 判定 | **{{ case.ai_judgment.type }}** (置信度 {{ case.ai_judgment.confidence }}) |
-{% if case.screenshot %}| 截图 | ![]({{ case.screenshot }}) |{% endif %}
+| 步骤 | Step {{ case.step }}: {{ case.action }} |
+| AI 判定 | **{{ case.ai_judgment }}** (置信度 {{ "%.0f"|format(case.ai_confidence * 100) }}%) |
+| AI 推理 | {{ case.ai_reasoning | default("无") }} |
+{% if case.screenshot %}
+| 截图 | ![](/api/v1/screenshots/{{ case.screenshot }}) |
+{% endif %}
 
 {% endfor %}
 {% endif %}
@@ -35,14 +36,14 @@
 {% if blocked_cases %}
 ## 阻塞用例
 {% for case in blocked_cases %}
-- **{{ case.title }}** — {{ case.reason | default("页面不可达") }}
+- **{{ case.case_title }}** — {{ case.reason | default("页面不可达") }}
 {% endfor %}
 {% endif %}
 
 {% if error_cases %}
 ## 错误用例
 {% for case in error_cases %}
-- **{{ case.title }}** — {{ case.reason | default("脚本异常") }}
+- **{{ case.case_title }}** — {{ case.reason | default("脚本异常") }}
 {% endfor %}
 {% endif %}
 
@@ -56,9 +57,9 @@
 {% if ai_decisions %}
 ## AI 决策摘要
 
-| # | 用例 | 场景 | 判定 | 置信度 |
-|---|------|------|------|--------|
-{% for d in ai_decisions %}| {{ loop.index }} | {{ d.case_id }} | {{ d.scenario }} | {{ d.judgment }} | {{ d.confidence }} |
+| # | 用例 | 步骤 | 判定 | 置信度 | 推理 |
+|---|------|------|------|--------|------|
+{% for d in ai_decisions %}| {{ loop.index }} | {{ d.case_title }} | {{ d.scenario[:40] }} | {{ d.judgment }} | {{ "%.0f"|format(d.confidence * 100) }}% | {{ d.reasoning[:60] }} |
 {% endfor %}
 {% endif %}
 

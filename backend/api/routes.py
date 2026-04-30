@@ -294,6 +294,19 @@ async def get_test_status(run_id: str):
     }
 
 
+@router.get("/tests/{run_id}/scripts")
+async def get_scripts(run_id: str):
+    """获取生成的脚本列表"""
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+    return {
+        "run_id": run_id,
+        "script_count": len(state.scripts),
+        "scripts": {case_id: script for case_id, script in state.scripts.items()}
+    }
+
+
 @router.get("/tests/{run_id}/logs")
 async def get_test_logs(run_id: str):
     state = _run_states.get(run_id)

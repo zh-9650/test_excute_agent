@@ -374,17 +374,44 @@ class Orchestrator:
 
     def _generate_report(self, state: RunState, analysis: dict) -> str:
         gen = ReportGenerator()
+        # 将步骤级结果展平为用例级失败详情
+        failed_detail, blocked_detail, error_detail, ai_decisions = [], [], [], []
+        for r in state.case_results:
+            case = next((c for c in state.cases if c.id == r.get("case_id")), None)
+            case_title = case.title if case else r.get("case_id", "?")
+            case_module = case.module if case else "?"
+            for step in r.get("steps", []):
+                if step.get("ai_judgment"):
+                    ai_decisions.append({
+                        "case_id": r.get("case_id", ""), "case_title": case_title,
+                        "step": step.get("step", 0), "scenario": step.get("action", ""),
+                        "judgment": step["ai_judgment"], "confidence": step.get("ai_confidence", 0),
+                        "screenshot": step.get("screenshot", ""), "reasoning": step.get("ai_reasoning", ""),
+                    })
+                if step.get("status") == "failed":
+                    failed_detail.append({
+                        "case_id": r.get("case_id"), "case_title": case_title,
+                        "module": case_module, "step": step.get("step"),
+                        "action": step.get("action", ""), "reason": step.get("reason", ""),
+                        "ai_judgment": step.get("ai_judgment", ""), "ai_confidence": step.get("ai_confidence", 0),
+                        "screenshot": step.get("screenshot", ""), "ai_reasoning": step.get("ai_reasoning", ""),
+                    })
+                elif step.get("status") == "blocked":
+                    blocked_detail.append({"case_title": case_title, "reason": step.get("reason", "")})
+                elif step.get("status") == "error":
+                    error_detail.append({"case_title": case_title, "reason": step.get("reason", "")})
+
         run_data = {
             "run_id": state.run_id,
             "target_url": state.target_url,
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(state.start_time)),
-            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(state.end_time)),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(state.start_time or time.time())),
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(state.end_time or time.time())),
             "summary": state.summary(),
             "module_stats": self._build_module_stats(state),
-            "failed_cases": [r for r in state.case_results if r.get("status") == "failed"],
-            "blocked_cases": [r for r in state.case_results if r.get("status") == "blocked"],
-            "error_cases": [r for r in state.case_results if r.get("status") == "error"],
-            "ai_decisions": [r for r in state.case_results if r.get("ai_judgment")],
+            "failed_cases": failed_detail,
+            "blocked_cases": blocked_detail,
+            "error_cases": error_detail,
+            "ai_decisions": ai_decisions,
             "ai_call_count": state.ai_call_count,
             "exploration_screenshots": self._collect_screenshots(state.exploration_result),
             "env_info": {"playwright": "1.52", "browser": "Chromium", "ai_model": self.config.ai_model},
