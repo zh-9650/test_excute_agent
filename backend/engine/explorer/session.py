@@ -43,8 +43,8 @@ class SessionManager:
                 pass
         return result
 
-    def create(self, target_url: str, username: str, password: str) -> SessionState:
-        sid = str(uuid.uuid4())[:8]
+    def create(self, target_url: str, username: str, password: str, session_id: str = "") -> SessionState:
+        sid = session_id or str(uuid.uuid4())[:8]
         encoded = base64.b64encode(password.encode()).decode()
         state = SessionState(
             id=sid, target_url=target_url,

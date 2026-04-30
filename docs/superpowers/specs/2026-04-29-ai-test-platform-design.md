@@ -26,26 +26,29 @@ API层    FastAPI REST+WS    14端点 + WebSocket 实时推送
 ### 核心流程
 
 1. **用例导入** — CSV 上传 → 编码检测 → AI 预检补全 → 用户确认 → 结构化用例对象
-2. **元素探索** — 按用例步骤逐页导航（含登录）→ 收集可交互元素 → 输出探索报告
-3. **脚本生成** — 用例 + 元素地图 → AI 生成 Python/Playwright 脚本 → AST 预检
-4. **智能执行** — 执行脚本 → 失败时 AI 判断（选择器/Bug/其他）→ 修复或记录 → 执行后 AI 结果分析
+2. **AI 探索（预执行）** — 打开浏览器 → 自动检测登录页并登录（一次）→ 对每个用例的每个步骤：截图 + 收集元素 → 发送给 AI → AI 返回 {selector, action, value} → 执行操作 → 记录探索结果 → 失败重试最多 5 次 → 输出探索报告
+3. **脚本生成（模板转换）** — 将探索记录直接转换为 Playwright Python 脚本（无需 AI）
+4. **智能执行** — 回放脚本 → 失败时走自愈链路（知识库→缓存→AI 兜底）→ 执行后 AI 结果分析
 5. **报告输出** — Markdown + JSON + 完整制品目录
 
 ## 测试用例状态机
 
 ```
-PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED / ERROR
+PENDING → EXPLORING → EXPLORED / EXPLORE_FAILED → GENERATING → GENERATED → RUNNING → PASSED / FAILED / BLOCKED / ERROR
 ```
 
 | 状态 | 说明 |
 |------|------|
 | PENDING | 已导入，等待探索 |
-| EXPLORING | 探索引擎正在收集元素 |
-| GENERATING | 正在生成脚本 |
-| RUNNING | 脚本执行中 |
+| EXPLORING | AI 正在逐步探索（预执行）用例 |
+| EXPLORED | 探索完成，记录可用 |
+| EXPLORE_FAILED | 探索失败（5 次重试后仍失败） |
+| GENERATING | 正在将探索记录转换为脚本 |
+| GENERATED | 脚本已生成，等待执行 |
+| RUNNING | 脚本回放执行中 |
 | PASSED | 断言通过 |
 | FAILED | 断言不通过 / 确认是 Bug |
-| BLOCKED | 页面不可达 / 元素严重缺失 / 需人工介入 |
+| BLOCKED | 页面不可达 / 需人工介入 |
 | ERROR | 脚本崩溃 / 环境异常 / 可重试 |
 
 所有终态都可触发重跑：
@@ -67,29 +70,32 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
 - 输出：结构化 TestCase 对象列表（含完整度标记）
 
 ### 2. 会话管理器
-- 探索阶段执行登录 → 保存 Playwright storageState
+- 探索阶段首次访问目标站点时自动检测登录页 → 智能登录（一次）→ 保存 Playwright storageState
+- 后续所有用例探索共享同一会话（cookies 持久化）
 - 执行阶段恢复会话
 - 检测 session 过期 → 用保存的凭据自动重登
 - SSO/验证码场景 → 截屏 → 通知用户介入
 
-### 3. 探索引擎
-- 深度探索：按用例步骤逐页导航
-- 导航策略：
-  - 已补全的用例 → 按补全后的页面路径精确导航
-  - 未补全的用例 → 从首页开始，按模块路径匹配导航层级 → AI 辅助推断目标页面
-  - 所有方式失败 → 标记 SKIPPED → 探索报告中展示
-- 每页收集可交互元素（tag/class/text/aria-label）
-- 等待策略：networkidle → domcontentloaded → 固定兜底
-- 弹窗自动处理（ESC / 点击关闭 / 点击蒙层）
-- 页面不可达 → 标记 SKIPPED
-- 输出探索报告：已探索页面 + SKIPPED + 元素覆盖度
-- 支持用户查看报告后补充信息，只重探 SKIPPED 部分
+### 3. 探索引擎（AI 驱动预执行）
+- **核心思路**：探索 = AI 预执行。AI 像真人测试工程师一样，在真实 UI 上逐步操作，记录每步的真实选择器和操作结果。
+- **共享探索状态**：所有用例共享同一个浏览器会话，登录一次，cookies 持久化贯穿全流程。
+- **登录智能检测**：自动检测页面中的密码输入框（`type="password"`），识别登录表单，自动填写凭据并提交。支持弹窗式登录和页面跳转式登录。
+- **AI 驱动步骤执行**：
+  - 对每个用例的每个步骤：截图 + 收集当前页面可交互元素 → 发送给 AI
+  - AI 分析截图和元素列表，结合步骤描述，返回 `{selector, action, value}` 决策
+  - 执行 AI 返回的操作（click/fill/select/navigate/assert 等）
+  - 记录：真实选择器、操作类型、操作值、操作后截图
+- **断言方式**：通过 AI 判断（截图 + 元素状态 → AI 判定 pass/fail），不依赖 URL 变化。
+- **重试机制**：单步操作失败最多重试 5 次，每次重试重新截图让 AI 重新决策。5 次后标记该用例探索失败。
+- **弹窗自动处理**（ESC / 点击关闭 / 点击蒙层）
+- **探索结果**：每个用例输出探索成功/失败状态 + 每步操作记录（选择器、动作、截图路径）。全部用例探索完成后输出探索报告。
 
-### 4. 脚本生成器
-- 输入：用例 + 元素地图
-- AI 生成 Python/Playwright 脚本
+### 4. 脚本生成器（模板转换）
+- 输入：探索记录（每步的真实选择器、动作、值、截图路径）
+- **无需 AI**：直接将探索记录按模板转换为 Playwright Python 脚本
+- 模板逻辑：`goto` → `click(selector)` → `fill(selector, value)` → `expect(locator).to_be_visible()` 等
 - **预检环节**：Python AST 语法检查 + 基础规则（导入检查、API 拼写等）
-- 未通过 → 退回 AI 修复（最多 2 次）→ 仍失败 → 标记 ERROR
+- 未通过 → 退回修复 → 仍失败 → 标记 ERROR
 - 特殊场景处理：文件上传（测试数据工厂）、拖拽排序、多 Tab、文件下载
 
 ### 5. 测试数据工厂
@@ -192,18 +198,25 @@ PENDING → EXPLORING → GENERATING → RUNNING → PASSED / FAILED / BLOCKED /
   GET    /api/v1/cases/{suite_id}
   DELETE /api/v1/cases/{suite_id}
 
-测试执行
-  POST   /api/v1/tests/run
+测试执行（分步模式）
+  POST   /api/v1/tests/explore        ← Step 1: AI 探索（预执行）
+  POST   /api/v1/tests/generate       ← Step 2: 脚本生成（模板转换）
+  POST   /api/v1/tests/execute        ← Step 3: 回放执行
   GET    /api/v1/tests/{run_id}/status
-  WS     /api/v1/tests/{run_id}/logs
+  GET    /api/v1/tests/{run_id}/scripts
+  GET    /api/v1/tests/{run_id}/logs
+  WS     /api/v1/tests/{run_id}/ws
   POST   /api/v1/tests/{run_id}/pause
   POST   /api/v1/tests/{run_id}/resume
   POST   /api/v1/tests/{run_id}/stop
 
-探索
-  POST   /api/v1/explore/start
-  GET    /api/v1/explore/{id}/report
-  POST   /api/v1/explore/{id}/retry
+一键执行（兼容旧接口）
+  POST   /api/v1/tests/run
+
+历史记录
+  GET    /api/v1/runs
+  GET    /api/v1/runs/{run_id}
+  DELETE /api/v1/runs/{run_id}
 
 报告
   GET    /api/v1/reports/{run_id}
@@ -295,9 +308,13 @@ test_platform/
 │   ├── api/           # FastAPI 路由
 │   ├── engine/        # 核心引擎
 │   │   ├── parser/    # 用例解析器
-│   │   ├── explorer/  # 探索引擎
-│   │   ├── generator/ # 脚本生成器
-│   │   ├── executor/  # 智能执行器
+│   │   ├── explorer/  # 探索引擎（AI 驱动）
+│   │   │   ├── browser.py      # Playwright 浏览器控制
+│   │   │   ├── session.py      # 会话管理
+│   │   │   ├── ai_explorer.py  # AI 驱动探索（核心）
+│   │   │   └── prompts.py      # AI 探索提示词
+│   │   ├── generator/ # 脚本生成器（模板转换）
+│   │   ├── executor/  # 智能执行器（回放+自愈）
 │   │   └── reporter/  # 报告生成器
 │   ├── ai/            # AI 提供商适配层
 │   ├── models/        # 数据模型

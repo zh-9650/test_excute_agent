@@ -3,12 +3,14 @@ import uuid
 import time
 import asyncio
 from dataclasses import dataclass, field
+from typing import Optional
 from backend.models.case import TestCase, CaseStatus
 from backend.engine.parser.csv_parser import CSVParser
 from backend.engine.parser.enricher import CaseEnricher
 from backend.engine.explorer.session import SessionManager
 from backend.engine.explorer.browser import BrowserController
 from backend.engine.explorer.engine import ExplorationEngine
+from backend.engine.explorer.ai_explorer import AIExplorer
 from backend.engine.generator.generator import ScriptGenerator
 from backend.engine.executor.executor import SmartExecutor, ExecutionContext
 from backend.engine.executor.healing import HealingStore
@@ -27,10 +29,30 @@ class RunState:
     cases: list[TestCase] = field(default_factory=list)
     case_results: list[dict] = field(default_factory=list)
     exploration_result: dict = field(default_factory=dict)
+    exploration_results: dict = field(default_factory=dict)  # case_id -> CaseExplorationResult
     scripts: dict[str, str] = field(default_factory=dict)
     start_time: float = 0.0
     end_time: float = 0.0
     ai_call_count: int = 0
+    stop_requested: bool = False
+    _pause_event: Optional[asyncio.Event] = field(default=None, repr=False)
+    current_case_index: int = 0
+
+    def __post_init__(self):
+        if self._pause_event is None:
+            self._pause_event = asyncio.Event()
+            self._pause_event.set()  # 默认非暂停
+
+    @property
+    def pause_event(self) -> asyncio.Event:
+        if self._pause_event is None:
+            self._pause_event = asyncio.Event()
+            self._pause_event.set()
+        return self._pause_event
+
+    @pause_event.setter
+    def pause_event(self, value: asyncio.Event):
+        self._pause_event = value
 
     def log(self, level: str, message: str):
         entry = {"ts": time.time(), "level": level, "msg": message}
@@ -166,11 +188,11 @@ class Orchestrator:
         return cases
 
     async def explore_only(self, state: RunState, target_url: str, credentials: dict):
-        """仅探索：加载用例 -> 打开浏览器 -> 逐页收集元素 -> 返回元素地图"""
+        """Step 1: AI 探索 — 打开浏览器，AI 逐步预执行每个用例"""
         state.cases = self._load_cases(state.suite_id)
         await self._log(state, "info", f"Loaded {len(state.cases)} test cases")
         state.status = "exploring"
-        exploration = await self._explore(state, target_url, credentials)
+        exploration = await self._explore_ai(state, target_url, credentials)
         state.exploration_result = exploration
         return exploration
 
@@ -196,9 +218,19 @@ class Orchestrator:
             backup_provider = self.config.create_backup_provider() if self.config.ai_backup_model else None
             executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log, target_url=state.target_url)
 
-            for case in state.cases:
+            for idx, case in enumerate(state.cases):
                 if case.completeness not in ("complete", "enriched"):
                     continue
+
+                # 停止检查
+                if state.stop_requested:
+                    await self._log(state, "info", "Stop requested, halting execution")
+                    break
+
+                # 暂停检查
+                await state.pause_event.wait()
+
+                state.current_case_index = idx
 
                 # 熔断检查
                 if executor.is_melted():
@@ -227,7 +259,7 @@ class Orchestrator:
 
             username = credentials.get("username", "")
             password = credentials.get("password", "")
-            session = self.session_mgr.create(target_url, username, password)
+            session = self.session_mgr.create(target_url, username, password, session_id=state.run_id)
 
             if username and password:
                 await self._log(state, "info", f"Navigating to {target_url} and detecting login form...")
@@ -258,39 +290,175 @@ class Orchestrator:
         finally:
             await browser.stop()
 
+    async def _explore_ai(self, state: RunState, target_url: str, credentials: dict) -> dict:
+        """AI 驱动探索 — 打开浏览器，登录，然后让 AI 逐步预执行每个用例"""
+        browser = BrowserController(headless=self.config.browser_headless)
+        try:
+            await self._log(state, "info", "Launching browser for AI exploration...")
+            await browser.start()
+
+            username = credentials.get("username", "")
+            password = credentials.get("password", "")
+            self.session_mgr.create(target_url, username, password, session_id=state.run_id)
+
+            # 导航到目标站点
+            goto_result = await browser.goto(target_url)
+            if not goto_result["success"]:
+                await self._log(state, "error", f"Cannot reach target URL: {goto_result.get('error')}")
+                return {"error": f"Cannot reach {target_url}: {goto_result.get('error')}"}
+
+            await browser.wait_for_page_ready(strategy="domcontentloaded")
+
+            # 自动登录（一次）
+            if username and password:
+                await self._log(state, "info", "Detecting and performing login...")
+                await self._detect_and_login(browser, state, username, password)
+            else:
+                await self._log(state, "info", "No credentials provided, skipping login")
+
+            # 保存登录态
+            try:
+                cookies = await browser.page.context.cookies()
+                self.session_mgr.save_storage_state(state.run_id, {"cookies": cookies})
+                await self._log(state, "info", "Login state saved")
+            except Exception:
+                pass
+
+            # AI 逐步探索每个用例
+            ai_provider = self.config.create_provider() if self.config.ai_api_key else None
+            if not ai_provider:
+                await self._log(state, "error", "No AI provider configured, cannot explore")
+                return {"error": "No AI provider configured"}
+
+            explorer_log = lambda msg: self._log(state, "info", msg)
+            explorer = AIExplorer(browser=browser, ai_provider=ai_provider, log_callback=explorer_log)
+
+            explored, failed = 0, 0
+            for i, case in enumerate(state.cases):
+                if state.stop_requested:
+                    await self._log(state, "info", "Stop requested, halting exploration")
+                    break
+
+                await state.pause_event.wait()
+                state.current_case_index = i
+
+                case_result = await explorer.explore_case(case, state.run_id)
+                state.exploration_results[case.id] = case_result
+
+                if case_result.status == "explored":
+                    explored += 1
+                else:
+                    failed += 1
+
+            # 构建探索结果摘要
+            all_steps = []
+            for cr in state.exploration_results.values():
+                all_steps.extend(cr.steps)
+
+            return {
+                "explored_cases": explored,
+                "failed_cases": failed,
+                "total_cases": len(state.cases),
+                "total_steps": len(all_steps),
+                "total_retries": sum(cr.total_retries for cr in state.exploration_results.values()),
+                "case_results": {cid: {"status": cr.status, "steps": len(cr.steps)} for cid, cr in state.exploration_results.items()},
+            }
+        except Exception as e:
+            import traceback
+            await self._log(state, "error", f"AI Exploration failed: {e}")
+            await self._log(state, "error", traceback.format_exc()[-300:])
+            return {"error": str(e)}
+        finally:
+            await browser.stop()
+
     async def _detect_and_login(self, browser, state: RunState, username: str, password: str):
-        """检测登录表单并自动登录（支持中英文）"""
+        """检测登录表单并自动登录（支持中英文，支持弹窗式登录）"""
         await self._log(state, "info", "  Scanning for login form...")
         elements = await browser.collect_interactive_elements()
+        await self._log(state, "info", f"  Found {len(elements)} interactive elements on page")
 
-        # 直接找 input 类型：密码框存在 = 登录页
-        has_password_input = any(e.tag == "input" for e in elements)
+        # 打印所有 input 元素的属性用于调试
+        for el in elements:
+            if el.tag == "input":
+                await self._log(state, "info", f"    INPUT: type={el.attributes.get('type','')} placeholder={el.attributes.get('placeholder','')} classes={el.classes}")
+
+        # 检查是否有密码框（直接登录页）
+        has_password_input = any(
+            (e.tag == "input" and (
+                e.attributes.get("type") == "password" or
+                "password" in f"{e.text} {e.aria_label} {' '.join(e.classes)}".lower()
+            ))
+            for e in elements
+        )
+        await self._log(state, "info", f"  has_password_input = {has_password_input}")
+
+        # 如果没有密码框，可能需要先点击"登录"按钮弹出登录框
         if not has_password_input:
-            # 也检查页面文本
+            await self._log(state, "info", "  No password field on page, looking for login button...")
+            login_btn = None
+            for el in elements:
+                if el.tag == "button":
+                    txt = (el.text + el.aria_label).strip()
+                    if any(k in txt for k in ["登录", "登 录", "Login", "Sign in", "sign in"]):
+                        login_btn = el
+                        break
+                    # 也匹配 link 类型
+                if el.tag == "a":
+                    txt = (el.text + el.aria_label).strip()
+                    if any(k in txt for k in ["登录", "登 录", "Login", "Sign in"]):
+                        login_btn = el
+                        break
+
+            if login_btn:
+                await self._log(state, "info", f"  Found login button: '{login_btn.text}', clicking...")
+                try:
+                    await browser.page.click(login_btn.selector)
+                    await asyncio.sleep(1.5)
+                    await browser.wait_for_page_ready(strategy="domcontentloaded")
+                    # 重新收集元素（登录框已弹出）
+                    elements = await browser.collect_interactive_elements()
+                    has_password_input = any(
+                        (e.tag == "input" and (
+                            e.attributes.get("type") == "password" or
+                            "password" in f"{e.text} {e.aria_label} {' '.join(e.classes)}".lower()
+                        ))
+                        for e in elements
+                    )
+                    if has_password_input:
+                        await self._log(state, "info", f"  Login modal opened, found {len(elements)} elements")
+                    else:
+                        await self._log(state, "warn", "  Clicked login button but no password field appeared")
+                except Exception as e:
+                    await self._log(state, "warn", f"  Failed to click login button: {e}")
+
+        if not has_password_input:
+            # 最后检查页面文本
             page_summary = await browser.get_page_summary()
             text = page_summary.get("text_snippet", "").lower()
-            login_keywords = ["login", "password", "sign in", "登 录", "登录", "密码", "用户名", "账 号", "账号"]
+            login_keywords = ["login", "password", "sign in", "登录", "密码", "用户名", "账号"]
             if not any(kw in text for kw in login_keywords):
                 await self._log(state, "info", "  No login form detected, skipping login")
                 return
 
         await self._log(state, "info", f"  Login form detected ({len(elements)} elements), identifying fields...")
 
-        # 找输入框：第一个 text/email 类型 = 用户名，password 类型 = 密码
+        # 找输入框：password 类型 = 密码，第一个非密码 input = 用户名
         username_sel, password_sel, submit_sel = None, None, None
         for el in elements:
-            attrs = f"{el.tag} {el.text} {el.aria_label} {' '.join(el.classes)}".lower()
-            if not username_sel and el.tag == "input":
-                # 第一个非密码输入框就是用户名
-                if "password" not in attrs:
-                    username_sel = el.selector
-                    await self._log(state, "info", f"  Found username: {el.selector}")
-            if not password_sel and el.tag == "input" and "password" in attrs:
+            el_type = el.attributes.get("type", "")
+            el_placeholder = el.attributes.get("placeholder", "")
+            attrs = f"{el.tag} {el.text} {el.aria_label} {' '.join(el.classes)} {el_type} {el_placeholder}".lower()
+            if not password_sel and el.tag == "input" and (el_type == "password" or "password" in attrs):
                 password_sel = el.selector
-                await self._log(state, "info", f"  Found password: {el.selector}")
+                await self._log(state, "info", f"  Found password: {el.selector} (type={el_type})")
+            elif not username_sel and el.tag == "input":
+                # 排除 hidden 和 password
+                if el_type not in ("hidden", "password") and "password" not in attrs:
+                    username_sel = el.selector
+                    await self._log(state, "info", f"  Found username: {el.selector} (type={el_type}, placeholder={el_placeholder})")
             if not submit_sel and el.tag == "button":
                 txt = (el.text + el.aria_label).lower()
-                if any(k in txt for k in ["login", "sign", "submit", "登录", "登 录", "确 认", "确认"]):
+                if any(k in txt for k in ["login", "sign", "submit", "登录", "登 录", "确 认", "确认", "确定"]):
                     submit_sel = el.selector
                     await self._log(state, "info", f"  Found submit: {el.selector}")
 
@@ -303,7 +471,6 @@ class Orchestrator:
 
         if not username_sel or not password_sel:
             await self._log(state, "warn", "  Could not identify all login fields, trying with common selectors")
-            # 尝试常见选择器
             username_sel = "input[type='text']" if not username_sel else username_sel
             password_sel = "input[type='password']" if not password_sel else password_sel
 
@@ -354,6 +521,14 @@ class Orchestrator:
             for case in state.cases:
                 if case.completeness not in ("complete", "enriched"):
                     continue
+
+                # 停止检查
+                if state.stop_requested:
+                    await self._log(state, "info", "Stop requested, halting execution")
+                    break
+
+                # 暂停检查
+                await state.pause_event.wait()
 
                 if executor.is_melted():
                     await self._log(state, "warn", f"MELTDOWN: {executor.melt_reason()}")

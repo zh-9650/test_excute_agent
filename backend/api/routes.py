@@ -40,6 +40,60 @@ async def update_config(updates: dict):
     return {"status": "updated", "changes": list(updates.keys())}
 
 
+@router.get("/runs")
+async def list_runs():
+    """获取历史运行记录"""
+    db = get_db()
+    rows = db.execute("SELECT * FROM test_runs ORDER BY started_at DESC LIMIT 50").fetchall()
+    db.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        # 获取该 run 的用例统计
+        db2 = get_db()
+        stats = db2.execute(
+            "SELECT status, COUNT(*) as cnt FROM case_results WHERE run_id = ? GROUP BY status",
+            (d["id"],)
+        ).fetchall()
+        db2.close()
+        summary = {s["status"]: s["cnt"] for s in stats}
+        d["summary"] = {
+            "total": sum(summary.values()),
+            "passed": summary.get("passed", 0),
+            "failed": summary.get("failed", 0),
+            "blocked": summary.get("blocked", 0),
+            "error": summary.get("error", 0),
+        }
+        result.append(d)
+    return result
+
+
+@router.get("/runs/{run_id}")
+async def get_run_detail(run_id: str):
+    """获取单次运行详情"""
+    db = get_db()
+    row = db.execute("SELECT * FROM test_runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Run not found")
+    d = dict(row)
+    results = db.execute("SELECT * FROM case_results WHERE run_id = ?", (run_id,)).fetchall()
+    d["case_results"] = [dict(r) for r in results]
+    db.close()
+    return d
+
+
+@router.delete("/runs/{run_id}")
+async def delete_run(run_id: str):
+    """删除运行记录"""
+    db = get_db()
+    db.execute("DELETE FROM case_results WHERE run_id = ?", (run_id,))
+    db.execute("DELETE FROM test_runs WHERE id = ?", (run_id,))
+    db.commit()
+    db.close()
+    return {"status": "deleted"}
+
+
 @router.post("/cases/upload")
 async def upload_cases(file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
@@ -204,18 +258,26 @@ async def start_generation(payload: dict):
 
     async def _run():
         try:
-            element_map = orch._build_element_map(state.exploration_result)
             for case in state.cases:
+                # 优先从探索记录生成（新架构）
+                if case.id in state.exploration_results:
+                    exp_result = state.exploration_results[case.id]
+                    if exp_result.status == "explored":
+                        script = orch.generator.generate_from_exploration(case, exp_result)
+                        if orch.generator.precheck(script)["valid"]:
+                            state.scripts[case.id] = script
+                            state.log("info", f"Script from exploration: {case.title}")
+                            continue
+
+                # 回退到旧的模板生成
                 if case.completeness not in ("complete", "enriched"):
                     continue
-                script = None
-                if cfg.ai_api_key:
-                    script = await orch.generator.generate_with_ai(case, element_map)
-                if not script:
-                    script = orch.generator.build_script_template(case, element_map)
+                element_map = orch._build_element_map(state.exploration_result)
+                script = orch.generator.build_script_template(case, element_map)
                 if orch.generator.precheck(script)["valid"]:
                     state.scripts[case.id] = script
-                    state.log("info", f"Script: {case.title}")
+                    state.log("info", f"Script from template: {case.title}")
+
             state.status = "generated"
             state.log("info", f"Done: {len(state.scripts)} scripts ready")
         except Exception as e:
@@ -244,6 +306,7 @@ async def start_execution(payload: dict):
             executor = SmartExecutor()
             analysis = executor.classify_results(state.case_results)
             orch._generate_report(state, analysis)
+            orch._persist_results(state)
             state.status = "completed"
             state.end_time = time.time()
             state.log("info", f"Done: {state.summary()['passed']}P/{state.summary()['failed']}F")
@@ -291,7 +354,43 @@ async def get_test_status(run_id: str):
         "status": state.status,
         "summary": summary,
         "logs_count": len(state.logs),
+        "current_case_index": state.current_case_index,
+        "total_cases": len(state.cases),
     }
+
+
+@router.post("/tests/{run_id}/pause")
+async def pause_test(run_id: str):
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+    if hasattr(state.pause_event, 'clear'):
+        state.pause_event.clear()
+    state.status = "paused"
+    return {"status": "paused"}
+
+
+@router.post("/tests/{run_id}/resume")
+async def resume_test(run_id: str):
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+    if hasattr(state.pause_event, 'set'):
+        state.pause_event.set()
+    state.status = "running"
+    return {"status": "running"}
+
+
+@router.post("/tests/{run_id}/stop")
+async def stop_test(run_id: str):
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+    state.stop_requested = True
+    # 如果在暂停中，也需要解除暂停以便循环能退出
+    if hasattr(state.pause_event, 'set'):
+        state.pause_event.set()
+    return {"status": "stopping"}
 
 
 @router.get("/tests/{run_id}/scripts")
@@ -376,11 +475,17 @@ async def get_artifact(run_id: str, filename: str):
 async def serve_screenshot(path: str):
     """直接提供截图文件"""
     import os
-    full_path = path
-    if os.path.exists(full_path):
-        return FileResponse(full_path, media_type="image/png")
-    # 尝试 test_artifacts 下
-    alt_path = f"test_artifacts/{path}"
+    # 直接路径
+    if os.path.exists(path):
+        return FileResponse(path, media_type="image/png")
+    # 尝试 test_artifacts 下（处理不带 test_artifacts 前缀的路径）
+    alt_path = f"test_artifacts/{path}" if not path.startswith("test_artifacts/") else path
     if os.path.exists(alt_path):
         return FileResponse(alt_path, media_type="image/png")
+    # 尝试去掉 test_artifacts/ 前缀（处理路径重复的情况）
+    if path.startswith("test_artifacts/"):
+        stripped = path[len("test_artifacts/"):]
+        alt_path2 = f"test_artifacts/{stripped}"
+        if os.path.exists(alt_path2):
+            return FileResponse(alt_path2, media_type="image/png")
     raise HTTPException(404, f"Screenshot not found: {path}")

@@ -72,11 +72,15 @@ class BrowserController:
                     text = text.strip()[:200] if text else ""
                     classes = await el.get_attribute("class") or ""
                     aria = await el.get_attribute("aria-label") or ""
+                    el_type = await el.get_attribute("type") or ""
+                    placeholder = await el.get_attribute("placeholder") or ""
+                    name = await el.get_attribute("name") or ""
                     selector = self._build_selector(tag, text, aria, classes)
                     elements.append(ElementInfo(
                         tag=tag, text=text, selector=selector,
                         aria_label=aria,
                         classes=classes.split() if classes else [],
+                        attributes={"type": el_type, "placeholder": placeholder, "name": name},
                     ))
                 except Exception:
                     continue

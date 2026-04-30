@@ -12,28 +12,33 @@
 
 ## 阶段概览
 
-| 阶段 | 任务数 | 产出 |
-|------|--------|------|
-| 一、基础设施 | 4 | 项目脚手架、数据模型、AI 适配层、配置管理 |
-| 二、输入管道 | 3 | CSV 解析、AI 预检补全、用例管理 |
-| 三、探索引擎 | 3 | 会话管理、Playwright 浏览器控制、元素探索+报告 |
-| 四、脚本生成 | 3 | 元素到选择器映射、脚本生成+预检、测试数据工厂 |
-| 五、智能执行 | 4 | 基础执行器、AI 决策、选择器自愈、结果分析 |
-| 六、报告输出 | 2 | Jinja2 模板渲染、Markdown+JSON 报告 |
-| 七、API 层 | 3 | REST 端点、WebSocket 日志推送、CI/CD 兼容 |
-| 八、前端 | 4 | 项目脚手架、用例导入页、执行面板、报告页 |
-| 九、集成验证 | 2 | 端到端流程、边界异常测试 |
+| 阶段 | 任务数 | 产出 | 进度 |
+|------|--------|------|------|
+| 一、基础设施 | 4 | 项目脚手架、数据模型、AI 适配层、配置管理 | ✅ 已完成 |
+| 二、输入管道 | 3 | CSV 解析、AI 预检补全、用例管理 | ✅ 已完成 |
+| 三、探索引擎 | 3 | 会话管理、浏览器控制、**AI 驱动探索（核心重构）** | 🔧 重构中 |
+| 四、脚本生成 | 3 | **模板转换**（无需 AI）、预检、测试数据工厂 | 🔧 待调整 |
+| 五、智能执行 | 4 | 基础执行器、AI 决策、选择器自愈、结果分析 | 🔧 待调整 |
+| 六、报告输出 | 2 | Jinja2 模板渲染、Markdown+JSON 报告 | ✅ 已完成 |
+| 七、API 层 | 3 | REST 端点、WebSocket、**分步执行 API** | ✅ 已完成 |
+| 八、前端 | 4 | 脚手架、用例导入、**执行面板（含暂停/停止）**、报告页 | ✅ 已完成 |
+| 九、集成验证 | 2 | 端到端流程、边界异常测试 | ⏳ 待开始 |
+
+> **架构变更说明**：
+> - 探索引擎从"按 URL 机械导航"改为"AI 驱动预执行"（Task 8 重写）
+> - 脚本生成从"AI 生成"改为"模板转换"（Task 9 简化）
+> - 执行器保持"回放+自愈"不变，但脚本来源变为探索记录（Task 11 微调）
 
 ---
 
-### Task 1: 项目脚手架 + 依赖管理
+### Task 1: 项目脚手架 + 依赖管理 ✅
 
 **Files:**
 - Create: `backend/requirements.txt`
 - Create: `backend/pyproject.toml`
 - Create: `backend/README.md`
 
-- [ ] **Step 1: 创建后端目录结构**
+- [x] **Step 1: 创建后端目录结构**
 
 ```bash
 mkdir -p backend/engine/{parser,explorer,generator,executor,reporter}
@@ -96,7 +101,7 @@ git commit -m "chore: project scaffold with FastAPI + Playwright deps"
 
 ---
 
-### Task 2: 数据模型 + SQLite 存储层
+### Task 2: 数据模型 + SQLite 存储层 ✅
 
 **Files:**
 - Create: `backend/models/__init__.py`
@@ -462,7 +467,7 @@ git commit -m "feat: data models + SQLite storage layer"
 
 ---
 
-### Task 3: AI 提供商适配层 + 配置管理
+### Task 3: AI 提供商适配层 + 配置管理 ✅
 
 **Files:**
 - Create: `backend/ai/__init__.py`
@@ -708,7 +713,7 @@ git commit -m "feat: AI provider abstraction + config management"
 
 ---
 
-### Task 4: CSV 解析器 + AI 预检补全
+### Task 4: CSV 解析器 + AI 预检补全 ✅
 
 **Files:**
 - Create: `backend/engine/parser/__init__.py`
@@ -891,7 +896,7 @@ git commit -m "feat: CSV parser with encoding detection + completeness check"
 
 ---
 
-### Task 5: AI 预检补全器
+### Task 5: AI 预检补全器 ✅
 
 **Files:**
 - Create: `backend/engine/parser/enricher.py`
@@ -1031,7 +1036,7 @@ git commit -m "feat: AI case enricher with completeness evaluation"
 
 ---
 
-### Task 6: 会话管理器
+### Task 6: 会话管理器 ✅
 
 **Files:**
 - Create: `backend/engine/explorer/session.py`
@@ -1181,7 +1186,7 @@ git commit -m "feat: session manager with credential encryption + storageState"
 
 ---
 
-### Task 7: Playwright 浏览器控制器
+### Task 7: Playwright 浏览器控制器 ✅
 
 **Files:**
 - Create: `backend/engine/explorer/browser.py`
@@ -1387,309 +1392,361 @@ git commit -m "feat: Playwright browser controller with element collection"
 
 ---
 
-### Task 8: 探索引擎
+### Task 8: AI 驱动探索引擎（核心重构）
+
+> **架构变更**：探索引擎从"按 URL 机械导航"改为"AI 驱动预执行"。AI 看到页面截图和元素列表，根据用例步骤描述决定下一步操作。
 
 **Files:**
-- Create: `backend/engine/explorer/engine.py`
-- Test: `tests/test_explorer.py`
+- Create: `backend/engine/explorer/ai_explorer.py`
+- Create: `backend/engine/explorer/prompts.py`
+- Modify: `backend/engine/explorer/browser.py` — 已完成（增加 type/placeholder/name 属性收集）
+- Modify: `backend/engine/explorer/session.py` — 已完成（增加 session_id 参数）
+- Modify: `backend/engine/orchestrator.py` — 已完成（登录检测修复、分步执行支持）
+- Test: `tests/test_ai_explorer.py`
 
-- [ ] **Step 1: 编写探索引擎测试**
+- [x] **Step 1: 浏览器控制器增强** — 已完成
+  `browser.py` 已增加 `type`、`placeholder`、`name` 属性收集到 `ElementInfo.attributes`。
 
-```python
-# tests/test_explorer.py
-import pytest
-from backend.engine.explorer.engine import ExplorationEngine, ExplorationResult
-from backend.models.case import TestCase, Step
+- [x] **Step 2: 会话管理器修复** — 已完成
+  `session.py` 已增加 `session_id` 参数，解决探索/执行间 storageState 不匹配问题。
 
-def make_cases():
-    return [
-        TestCase(id="1", suite_id="s", module="/场景管理(#147)", title="列表展示",
-                 steps=[Step(1, "进入/场景管理(#147)页面"), Step(2, "观察列表")],
-                 completeness="complete"),
-        TestCase(id="2", suite_id="s", module="/场景管理(#147)", title="点击编辑",
-                 steps=[Step(1, "点击编辑按钮")],
-                 completeness="incomplete"),
-    ]
+- [x] **Step 3: 登录检测修复** — 已完成
+  `orchestrator._detect_and_login()` 已改为检查 `e.attributes.get("type") == "password"`，支持弹窗式登录。
 
-def test_exploration_plan_generation():
-    engine = ExplorationEngine(browser=None, ai=None)
-    cases = make_cases()
-    plan = engine.build_plan(cases)
-    assert len(plan["pages"]) > 0
-    assert plan["pages"][0]["module"] == "/场景管理(#147)"
-
-def test_group_cases_by_page():
-    engine = ExplorationEngine(browser=None, ai=None)
-    cases = make_cases()
-    groups = engine._group_by_page(cases)
-    assert "/场景管理(#147)" in groups
-
-def test_exploration_result_model():
-    result = ExplorationResult(
-        exploration_id="exp-001",
-        pages_explored=[{"url": "/scenario", "elements_found": 15}],
-        pages_skipped=[{"url": "/blocked", "reason": "404"}],
-        total_elements=15
-    )
-    assert result.total_elements == 15
-    assert len(result.pages_skipped) == 1
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-```bash
-pytest tests/test_explorer.py -v
-# Expected: FAIL
-```
-
-- [ ] **Step 3: 实现探索引擎**
+- [ ] **Step 4: 编写 AI 探索提示词**
 
 ```python
-# backend/engine/explorer/engine.py
-import uuid
+# backend/engine/explorer/prompts.py
+
+EXPLORATION_SYSTEM_PROMPT = """你是一个专业的自动化测试工程师。
+你将看到一个网页截图和页面上的可交互元素列表。
+根据给定的测试用例步骤描述，决定下一步操作。
+
+返回 JSON 格式:
+{
+    "action": "click" | "fill" | "select" | "navigate" | "assert" | "wait" | "scroll",
+    "selector": "元素选择器（从元素列表中选择最精确的）",
+    "value": "操作值（fill 时为输入内容，select 时为选项值，其他为空）",
+    "reasoning": "选择该元素和操作的原因",
+    "confidence": 0.0-1.0
+}
+
+规则：
+1. 优先使用 text 选择器（如 button:has-text('xxx')），其次 aria-label，最后 class
+2. 如果步骤描述模糊，根据页面上下文推断最合理的操作
+3. 如果找不到目标元素，返回 action: "wait" 并说明原因
+4. confidence < 0.5 时表示不确定，需人工确认
+"""
+
+EXPLORATION_USER_TEMPLATE = """测试用例：{case_title}
+前置条件：{preconditions}
+当前步骤（第{step_num}步）：{step_action}
+预期结果：{expected}
+
+当前页面元素列表：
+{elements_text}
+
+请决定下一步操作。返回 JSON。"""
+
+ASSERTION_SYSTEM_PROMPT = """你是一个测试断言专家。
+你将看到操作前后的页面截图和元素列表。
+根据预期结果，判断测试是否通过。
+
+返回 JSON:
+{
+    "result": "pass" | "fail" | "uncertain",
+    "reasoning": "判断依据",
+    "actual_result": "实际观察到的结果",
+    "confidence": 0.0-1.0
+}"""
+```
+
+- [ ] **Step 5: 实现 AI 驱动探索引擎**
+
+```python
+# backend/engine/explorer/ai_explorer.py
+import json
+import asyncio
 from dataclasses import dataclass, field
-from backend.models.case import TestCase
+from backend.engine.explorer.browser import BrowserController, ElementInfo
+from backend.engine.explorer.prompts import (
+    EXPLORATION_SYSTEM_PROMPT, EXPLORATION_USER_TEMPLATE, ASSERTION_SYSTEM_PROMPT
+)
 
 
 @dataclass
-class ExplorationResult:
-    exploration_id: str
-    pages_explored: list = field(default_factory=list)
-    pages_skipped: list = field(default_factory=list)
-    total_elements: int = 0
-    coverage_score: float = 0.0
+class StepRecord:
+    """单步探索记录"""
+    step_num: int
+    action_desc: str
+    ai_action: str = ""        # click/fill/select/navigate/assert/wait
+    ai_selector: str = ""
+    ai_value: str = ""
+    ai_reasoning: str = ""
+    ai_confidence: float = 0.0
+    executed: bool = False
+    success: bool = False
+    error: str = ""
+    screenshot_before: str = ""
+    screenshot_after: str = ""
+    retry_count: int = 0
 
 
-class ExplorationEngine:
-    def __init__(self, browser, ai=None):
+@dataclass
+class CaseExplorationResult:
+    """单用例探索结果"""
+    case_id: str
+    case_title: str
+    status: str = "pending"  # exploring/explored/explore_failed
+    steps: list[StepRecord] = field(default_factory=list)
+    total_retries: int = 0
+
+
+@dataclass
+class ExplorationReport:
+    """探索总报告"""
+    run_id: str
+    case_results: list[CaseExplorationResult] = field(default_factory=list)
+    total_cases: int = 0
+    explored_cases: int = 0
+    failed_cases: int = 0
+    total_steps: int = 0
+    total_retries: int = 0
+
+
+class AIExplorer:
+    def __init__(self, browser: BrowserController, ai_provider, log_callback=None):
         self.browser = browser
-        self.ai = ai
+        self.ai = ai_provider
+        self.log = log_callback or (lambda *a, **kw: None)
+        self._max_step_retries = 5
 
-    def build_plan(self, cases: list[TestCase]) -> dict:
-        pages = {}
-        for case in cases:
-            module = case.module
-            if module not in pages:
-                pages[module] = {
-                    "module": module,
-                    "url_hint": module,
-                    "cases": [],
-                    "steps_texts": set()
-                }
-            pages[module]["cases"].append(case.id)
-            for step in case.steps:
-                pages[module]["steps_texts"].add(step.action)
-        return {
-            "pages": list(pages.values()),
-            "total_pages": len(pages),
-            "total_cases": len(cases)
-        }
+    async def explore_case(self, case, run_id: str) -> CaseExplorationResult:
+        """探索单个用例"""
+        result = CaseExplorationResult(case_id=case.id, case_title=case.title, status="exploring")
 
-    def _group_by_page(self, cases: list[TestCase]) -> dict:
-        groups = {}
-        for case in cases:
-            key = case.module
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(case)
-        return groups
+        for step in case.steps:
+            record = StepRecord(step_num=step.order, action_desc=step.action)
+            result.steps.append(record)
 
-    async def explore(self, cases: list[TestCase], session, target_url: str) -> ExplorationResult:
-        exp_id = str(uuid.uuid4())[:8]
-        plan = self.build_plan(cases)
-        result = ExplorationResult(exploration_id=exp_id)
+            success = await self._execute_step_with_retry(case, step, record, run_id)
+            if not success:
+                result.status = "explore_failed"
+                return result
 
-        for page_info in plan["pages"]:
-            page_url = self._resolve_url(target_url, page_info["url_hint"])
-            nav_result = await self.browser.goto(page_url)
-            if not nav_result["success"]:
-                result.pages_skipped.append({
-                    "url": page_url,
-                    "reason": nav_result.get("error", "unknown"),
-                    "module": page_info["module"]
-                })
-                continue
-
-            await self.browser.dismiss_dialogs()
-            await self.browser.wait_for_page_ready(strategy="networkidle")
-
-            elements = await self.browser.collect_interactive_elements()
-            result.pages_explored.append({
-                "url": self.browser.page.url,
-                "module": page_info["module"],
-                "elements_found": len(elements),
-                "elements": [{"tag": e.tag, "selector": e.selector, "text": e.text} for e in elements]
-            })
-            result.total_elements += len(elements)
-
-        explored = len(result.pages_explored)
-        total = len(plan["pages"]) or 1
-        result.coverage_score = explored / total
+        result.status = "explored"
         return result
 
-    def _resolve_url(self, base_url: str, hint: str) -> str:
-        if hint.startswith("http"):
-            return hint
-        return base_url.rstrip("/") + "/" + hint.lstrip("/")
+    async def _execute_step_with_retry(self, case, step, record: StepRecord, run_id: str) -> bool:
+        """执行单步，最多重试 max_step_retries 次"""
+        for attempt in range(self._max_step_retries):
+            record.retry_count = attempt
 
-    def generate_exploration_report(self, result: ExplorationResult) -> str:
-        lines = [
-            "# 探索报告",
-            f"\n## 概况",
-            f"- 探索页面数：{len(result.pages_explored)}",
-            f"- 跳过页面数：{len(result.pages_skipped)}",
-            f"- 收集元素总数：{result.total_elements}",
-            f"- 覆盖率：{result.coverage_score:.0%}",
-        ]
-        if result.pages_explored:
-            lines.append("\n## 已探索页面")
-            for p in result.pages_explored:
-                lines.append(f"- {p['module']} → {p['url']} ({p['elements_found']} 个元素)")
-        if result.pages_skipped:
-            lines.append("\n## 跳过页面")
-            for p in result.pages_skipped:
-                lines.append(f"- {p['module']} → {p['url']} ({p['reason']})")
+            # 截图 + 收集元素
+            screenshot_path = f"test_artifacts/{run_id}/explore_{case.id}_s{step.order}_a{attempt}.png"
+            await self.browser.take_screenshot(screenshot_path)
+            record.screenshot_before = screenshot_path
+
+            elements = await self.browser.collect_interactive_elements()
+            elements_text = self._format_elements(elements)
+
+            # 发送给 AI 决策
+            user_prompt = EXPLORATION_USER_TEMPLATE.format(
+                case_title=case.title,
+                preconditions=case.preconditions,
+                step_num=step.order,
+                step_action=step.action,
+                expected=case.expected,
+                elements_text=elements_text
+            )
+
+            try:
+                response = await self.ai.analyze(EXPLORATION_SYSTEM_PROMPT, user_prompt)
+                decision = self._parse_decision(response)
+                record.ai_action = decision.get("action", "")
+                record.ai_selector = decision.get("selector", "")
+                record.ai_value = decision.get("value", "")
+                record.ai_reasoning = decision.get("reasoning", "")
+                record.ai_confidence = decision.get("confidence", 0)
+
+                self.log("info", f"[Step {step.order}] AI: {record.ai_action} → {record.ai_selector} (conf={record.ai_confidence:.2f})")
+
+                # 执行操作
+                exec_result = await self._execute_action(record.ai_action, record.ai_selector, record.ai_value)
+                record.executed = True
+
+                if exec_result["success"]:
+                    record.success = True
+                    await asyncio.sleep(1)  # 等待页面响应
+                    after_path = f"test_artifacts/{run_id}/explore_{case.id}_s{step.order}_after.png"
+                    await self.browser.take_screenshot(after_path)
+                    record.screenshot_after = after_path
+                    return True
+                else:
+                    record.error = exec_result.get("error", "")
+                    self.log("info", f"[Step {step.order}] 执行失败: {record.error}, 重试 {attempt+1}/{self._max_step_retries}")
+
+            except Exception as e:
+                record.error = str(e)
+                self.log("error", f"[Step {step.order}] AI 决策异常: {e}")
+
+            result.total_retries += 1
+
+        return False
+
+    async def _execute_action(self, action: str, selector: str, value: str) -> dict:
+        """执行 AI 返回的操作"""
+        try:
+            if action == "click":
+                await self.browser.page.click(selector, timeout=5000)
+            elif action == "fill":
+                await self.browser.page.fill(selector, value, timeout=5000)
+            elif action == "select":
+                await self.browser.page.select_option(selector, value, timeout=5000)
+            elif action == "navigate":
+                await self.browser.goto(value)
+            elif action == "wait":
+                await asyncio.sleep(2)
+            elif action == "scroll":
+                await self.browser.page.evaluate("window.scrollBy(0, 300)")
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _format_elements(self, elements: list[ElementInfo]) -> str:
+        lines = []
+        for i, el in enumerate(elements[:50]):
+            attrs = el.attributes or {}
+            parts = [f"[{i}] <{el.tag}>"]
+            if el.text:
+                parts.append(f"text='{el.text}'")
+            if attrs.get("type"):
+                parts.append(f"type='{attrs['type']}'")
+            if attrs.get("placeholder"):
+                parts.append(f"placeholder='{attrs['placeholder']}'")
+            if el.aria_label:
+                parts.append(f"aria='{el.aria_label}'")
+            if el.selector:
+                parts.append(f"selector='{el.selector}'")
+            lines.append(" ".join(parts))
         return "\n".join(lines)
+
+    def _parse_decision(self, response) -> dict:
+        """解析 AI 响应为决策对象"""
+        if hasattr(response, 'action'):
+            return response.action if isinstance(response.action, dict) else {}
+        if isinstance(response, dict):
+            return response
+        try:
+            return json.loads(str(response))
+        except:
+            return {}
 ```
 
-- [ ] **Step 4: 运行测试**
+- [ ] **Step 6: 更新 Orchestrator 接入 AI 探索**
+
+```python
+# backend/engine/orchestrator.py 中新增 explore_only 方法
+async def explore_only(self, state: RunState, target_url: str, credentials: dict) -> dict:
+    """Step 1: AI 探索 — 打开浏览器，AI 逐步预执行每个用例"""
+    # 加载用例
+    db = get_db()
+    rows = db.execute("SELECT * FROM test_cases WHERE suite_id = ?", (state.suite_id,)).fetchall()
+    db.close()
+    state.cases = [row_to_case(r) for r in rows]
+
+    # 启动浏览器
+    browser = BrowserController(headless=self.config.browser_headless)
+    await browser.goto(target_url)
+
+    # 自动登录（一次）
+    login_ok = await self._detect_and_login(browser, target_url, credentials)
+    if not login_ok:
+        return {"error": "Login failed"}
+
+    # AI 探索每个用例
+    explorer = AIExplorer(browser, self.ai, log_callback=self.log)
+    for i, case in enumerate(state.cases):
+        if state.stop_requested:
+            break
+        state.current_case_index = i
+        result = await explorer.explore_case(case, state.run_id)
+        state.exploration_results[case.id] = result
+
+    # 保存 storage state
+    storage = await browser.page.context.storage_state()
+    session_mgr.save_storage_state(state.run_id, storage)
+    await browser.stop()
+
+    return self._build_exploration_summary(state)
+```
+
+- [ ] **Step 7: 运行测试**
 
 ```bash
-pytest tests/test_explorer.py -v
+pytest tests/test_ai_explorer.py -v
 # Expected: PASS
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add backend/engine/explorer/engine.py tests/test_explorer.py
-git commit -m "feat: exploration engine with page plan + coverage report"
+git add backend/engine/explorer/ai_explorer.py backend/engine/explorer/prompts.py
+git commit -m "feat: AI-driven exploration engine - AI pre-executes test cases on real UI"
 ```
 
 ---
 
-### Task 9: 脚本生成器
+### Task 9: 脚本生成器（模板转换，无需 AI）
+
+> **架构变更**：脚本生成从"AI 生成"改为"模板转换"。探索阶段已记录每步的真实选择器和操作，生成阶段只需按模板转换为 Playwright 脚本。
 
 **Files:**
-- Create: `backend/engine/generator/generator.py`
+- Modify: `backend/engine/generator/generator.py` — 增加 `generate_from_exploration` 方法
 - Test: `tests/test_generator.py`
 
-- [ ] **Step 1: 编写生成器测试**
+- [x] **Step 1-5: 基础脚本生成器** — 已完成（Task 9 原始实现已存在）
+  `ScriptGenerator.build_script_template()` 和 `precheck()` 已实现。
+
+- [ ] **Step 6: 新增从探索记录生成脚本的方法**
 
 ```python
-# tests/test_generator.py
-import ast
-import pytest
-from backend.engine.generator.generator import ScriptGenerator
-from backend.models.case import TestCase, Step
+# backend/engine/generator/generator.py 中新增
+def generate_from_exploration(self, case, exploration_result) -> str:
+    """将探索记录直接转换为 Playwright 脚本（无需 AI）"""
+    steps_code = []
+    for step_record in exploration_result.steps:
+        if not step_record.success:
+            continue
+        action = step_record.ai_action
+        selector = step_record.ai_selector
+        value = step_record.ai_value
 
-def test_script_template_generation():
-    case = TestCase(id="1", suite_id="s", module="/场景", title="列表展示",
-                    steps=[Step(1, "进入页面"), Step(2, "观察列表")],
-                    expected="列表正确展示",
-                    preconditions="1. 用户已登录")
-    element_map = {
-        "/场景": [
-            {"tag": "button", "selector": "button:has-text('新增')", "text": "新增"},
-            {"tag": "table", "selector": "table.scenario-table", "text": ""}
-        ]
-    }
-    gen = ScriptGenerator(ai=None)
-    script = gen.build_script_template(case, element_map)
-    assert "from playwright.async_api import" in script
-    assert "async def test_" in script
-    assert "expect(" in script or "assert" in script
+        if action == "navigate":
+            steps_code.append(f'    await page.goto("{value}")')
+        elif action == "click":
+            steps_code.append(f'    await page.click("{selector}")')
+        elif action == "fill":
+            steps_code.append(f'    await page.fill("{selector}", "{value}")')
+        elif action == "select":
+            steps_code.append(f'    await page.select_option("{selector}", "{value}")')
+        elif action == "scroll":
+            steps_code.append(f'    await page.evaluate("window.scrollBy(0, 300)")')
+        elif action == "wait":
+            steps_code.append(f'    await asyncio.sleep(2)')
 
-def test_script_is_valid_python():
-    gen = ScriptGenerator(ai=None)
-    case = TestCase(id="1", suite_id="s", module="/m", title="t",
-                    steps=[Step(1, "click")], expected="ok")
-    script = gen.build_script_template(case, {})
-    try:
-        ast.parse(script)
-    except SyntaxError as e:
-        pytest.fail(f"Generated script has syntax error: {e}")
+    # 使用探索时的截图路径作为断言参考
+    screenshots = [s.screenshot_after for s in exploration_result.steps if s.screenshot_after]
 
-def test_precheck_passes_valid_script():
-    gen = ScriptGenerator(ai=None)
-    script = """
-from playwright.async_api import async_playwright, expect
-async def test_case():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
-        await page.goto("https://test.com")
-        await browser.close()
-"""
-    result = gen.precheck(script)
-    assert result["valid"] is True
-    assert len(result["errors"]) == 0
-
-def test_precheck_rejects_invalid_script():
-    gen = ScriptGenerator(ai=None)
-    script = "this is not python { def broken"
-    result = gen.precheck(script)
-    assert result["valid"] is False
-    assert len(result["errors"]) > 0
-
-def test_precheck_detects_missing_import():
-    gen = ScriptGenerator(ai=None)
-    script = """
-async def test_case():
-    browser = await p.chromium.launch()
-"""
-    result = gen.precheck(script)
-    assert result["valid"] is False
-    assert any("import" in e.lower() or "playwright" in e.lower() for e in result["errors"])
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-```bash
-pytest tests/test_generator.py -v
-# Expected: FAIL
-```
-
-- [ ] **Step 3: 实现脚本生成器**
-
-```python
-# backend/engine/generator/generator.py
-import ast
-from backend.models.case import TestCase
-
-
-class ScriptGenerator:
-    def __init__(self, ai=None):
-        self.ai = ai
-
-    def build_script_template(self, case: TestCase, element_map: dict) -> str:
-        steps_code = []
-        for step in case.steps:
-            action = step.action
-            selector = self._find_selector(action, element_map, case.module)
-            if "进入" in action or "打开" in action or "登录" in action:
-                url = step.enrichment.get("target_url", "") if step.enrichment else ""
-                steps_code.append(f'    await page.goto("{url}")')
-            elif "点击" in action:
-                sel = f"'{selector}'" if selector else ""
-                steps_code.append(f'    await page.click({sel})')
-            elif "输入" in action:
-                sel = f"'{selector}'" if selector else ""
-                steps_code.append(f'    await page.fill({sel}, "test_data")')
-            elif "观察" in action or "查看" in action or "检查" in action:
-                sel = f"'{selector}'" if selector else ""
-                steps_code.append(f'    el = page.locator({sel})')
-                steps_code.append(f'    await expect(el).to_be_visible()')
-
-        assertions = self._build_assertions(case.expected, element_map.get(case.module, []))
-
-        script = f'''import asyncio
+    script = f'''import asyncio
 from playwright.async_api import async_playwright, expect
 
 async def test_{case.id.replace("-", "_")}():
-    """用例: {case.title}"""
+    """用例: {case.title} (从探索记录生成)"""
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless={False})
+        browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
             viewport={{"width": 1920, "height": 1080}},
             locale="zh-CN"
@@ -1698,9 +1755,8 @@ async def test_{case.id.replace("-", "_")}():
         try:
 {chr(10).join(steps_code)}
 
-            # 断言
-{chr(10).join(assertions)}
-
+            # 最终截图验证
+            await page.screenshot(path=f"verify_{case.id}.png")
             print("PASS: {case.title}")
         except Exception as e:
             print(f"FAIL: {case.title} - {{e}}")
@@ -1709,61 +1765,21 @@ async def test_{case.id.replace("-", "_")}():
         finally:
             await browser.close()
 '''
-        return script
-
-    def _find_selector(self, action: str, element_map: dict, module: str) -> str:
-        elements = element_map.get(module, [])
-        for el in elements:
-            if el.get("text") and el["text"] in action:
-                return el["selector"]
-        if elements:
-            return elements[0].get("selector", "")
-        return ""
-
-    def _build_assertions(self, expected: str, elements: list) -> list[str]:
-        assertions = []
-        expected_lines = [e.strip() for e in expected.split("\n") if e.strip()]
-        for line in expected_lines[:3]:
-            assertions.append(f'    # 预期: {line}')
-        assertions.append(f'    print("Assertions passed")')
-        return assertions
-
-    def precheck(self, script: str) -> dict:
-        errors = []
-        try:
-            ast.parse(script)
-        except SyntaxError as e:
-            errors.append(f"Syntax error: {e}")
-            return {"valid": False, "errors": errors}
-
-        required_imports = ["async_playwright"]
-        for imp in required_imports:
-            if imp not in script:
-                errors.append(f"Missing import: {imp}")
-
-        if "async def test_" not in script:
-            errors.append("Missing async test function")
-
-        forbidden = ["time.sleep", "driver.", "selenium"]
-        for fb in forbidden:
-            if fb in script:
-                errors.append(f"Uses non-Playwright API: {fb}")
-
-        return {"valid": len(errors) == 0, "errors": errors}
+    return script
 ```
 
-- [ ] **Step 4: 运行测试**
+- [ ] **Step 7: 运行测试**
 
 ```bash
 pytest tests/test_generator.py -v
 # Expected: PASS
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add backend/engine/generator/ tests/test_generator.py
-git commit -m "feat: script generator with template + AST precheck"
+git add backend/engine/generator/generator.py
+git commit -m "feat: script generator now supports template conversion from exploration records"
 ```
 
 ---
@@ -2233,7 +2249,7 @@ git commit -m "feat: smart executor with healing + AI decision + failure classif
 
 ---
 
-### Task 12: 报告生成器
+### Task 12: 报告生成器 ✅
 
 **Files:**
 - Create: `backend/engine/reporter/reporter.py`
@@ -2423,7 +2439,7 @@ git commit -m "feat: Jinja2-driven report generator (Markdown + JSON)"
 
 ---
 
-### Task 13: FastAPI 路由 + WebSocket
+### Task 13: FastAPI 路由 + WebSocket ✅
 
 **Files:**
 - Create: `backend/api/__init__.py`
@@ -2666,7 +2682,7 @@ git commit -m "feat: FastAPI routes + WebSocket log broadcaster"
 
 ---
 
-### Task 14: 前端脚手架 + 用例导入页
+### Task 14: 前端脚手架 + 用例导入页 ✅
 
 **Files:**
 - Create: `frontend/package.json`, `frontend/vite.config.ts`, `frontend/index.html`
