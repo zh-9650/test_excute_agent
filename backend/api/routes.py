@@ -2,6 +2,7 @@ import json
 import uuid
 import asyncio
 from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi.responses import FileResponse
 from backend.engine.parser.csv_parser import CSVParser
 from backend.engine.parser.enricher import CaseEnricher
 from backend.config import Config
@@ -270,3 +271,17 @@ async def get_artifact(run_id: str, filename: str):
         with open(path, encoding="utf-8") as f:
             return {"content": f.read()}
     raise HTTPException(404, "Artifact not found")
+
+
+@router.get("/screenshots/{path:path}")
+async def serve_screenshot(path: str):
+    """直接提供截图文件"""
+    import os
+    full_path = path
+    if os.path.exists(full_path):
+        return FileResponse(full_path, media_type="image/png")
+    # 尝试 test_artifacts 下
+    alt_path = f"test_artifacts/{path}"
+    if os.path.exists(alt_path):
+        return FileResponse(alt_path, media_type="image/png")
+    raise HTTPException(404, f"Screenshot not found: {path}")

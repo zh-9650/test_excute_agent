@@ -82,10 +82,18 @@ class ExplorationEngine:
 
             await self._log(f"    Collected {len(elements)} elements [{tag_summary}]")
 
+            # 截图
+            import os
+            screenshot_path = f"test_artifacts/{result.exploration_id}/screenshots/page_{i+1}.png"
+            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+            await self.browser.take_screenshot(screenshot_path)
+            await self._log(f"    Screenshot saved: {screenshot_path}")
+
             result.pages_explored.append({
                 "url": self.browser.page.url, "module": page_info["module"],
                 "elements_found": len(elements),
-                "elements": [{"tag": e.tag, "selector": e.selector, "text": e.text} for e in elements]
+                "elements": [{"tag": e.tag, "selector": e.selector, "text": e.text} for e in elements],
+                "screenshot": screenshot_path,
             })
             result.total_elements += len(elements)
 

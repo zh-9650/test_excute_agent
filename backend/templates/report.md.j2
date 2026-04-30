@@ -62,6 +62,13 @@
 {% endfor %}
 {% endif %}
 
+{% if exploration_screenshots %}
+## 探索截图
+{% for s in exploration_screenshots %}
+- {{ s.page }}: ![](/api/v1/screenshots/{{ s.path }})
+{% endfor %}
+{% endif %}
+
 ## 环境信息
 
 - Playwright: {{ env_info.playwright | default("N/A") }}

@@ -324,6 +324,7 @@ class Orchestrator:
             "error_cases": [r for r in state.case_results if r.get("status") == "error"],
             "ai_decisions": [r for r in state.case_results if r.get("ai_judgment")],
             "ai_call_count": state.ai_call_count,
+            "exploration_screenshots": self._collect_screenshots(state.exploration_result),
             "env_info": {"playwright": "1.52", "browser": "Chromium", "ai_model": self.config.ai_model},
         }
         md_report = gen.generate_markdown(run_data)
@@ -338,6 +339,13 @@ class Orchestrator:
             f.write(json_report)
 
         return md_report
+
+    def _collect_screenshots(self, exploration: dict) -> list[dict]:
+        screenshots = []
+        for page in exploration.get("pages_explored", []):
+            if page.get("screenshot"):
+                screenshots.append({"page": page.get("module", ""), "path": page["screenshot"]})
+        return screenshots
 
     def _build_module_stats(self, state: RunState) -> list[dict]:
         stats = {}
