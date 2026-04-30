@@ -325,7 +325,7 @@ class Orchestrator:
 
             # 保存登录态
             cookies = await browser.page.context.cookies()
-            self.session_mgr.save_storage_state(session.id, {"cookies": cookies})
+            self.session_mgr.save_storage_state(state.run_id, {"cookies": cookies})
             await self._log(state, "info", "  Login state saved")
         except Exception as e:
             await self._log(state, "error", f"  Login failed: {e}")

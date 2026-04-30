@@ -1,0 +1,21 @@
+- generic [ref=e3]:
+  - heading "AI 自动化测试平台" [level=1] [ref=e4]
+  - generic [ref=e5]:
+    - generic [ref=e6]: 上传 CSV
+    - generic [ref=e7]: →补全用例
+    - generic [ref=e8]: →探索 & 执行
+  - generic [ref=e9]:
+    - button "Choose File" [ref=e10]
+    - button "上传用例" [ref=e11]
+    - paragraph [ref=e12]: 支持禅道导出的 CSV，含「所属模块」「测试点/用例标题」「步骤」「预期」等列
+  - generic [ref=e13]:
+    - heading "🔍 用例完整度判断标准" [level=3] [ref=e14]
+    - paragraph [ref=e15]:
+      - text: 完整用例：步骤同时包含导航（进入/打开 XX 页面）和操作（点击/输入/选择/删除）。
+      - text: 待补全用例：仅有操作但缺少目标页面路径。需要补充目标页面 URL和元素选择器。
+  - generic [ref=e16]:
+    - paragraph [ref=e17]: "用例集 ID: 4c2363d0 | 总用例: 1"
+    - paragraph [ref=e18]: "✅ 可直接生成脚本: 1 | ⚠️ 需要补全: 0"
+  - generic [ref=e19]:
+    - paragraph [ref=e20]: 🎉 所有用例均完整，可直接进入下一步！
+    - button "进入探索 & 执行 →" [ref=e21] [cursor=pointer]

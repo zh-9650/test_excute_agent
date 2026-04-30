@@ -1,0 +1,19 @@
+- generic [ref=e22]:
+  - button "← 返回" [ref=e23] [cursor=pointer]
+  - heading "执行测试" [level=1] [ref=e24]
+  - paragraph [ref=e25]: "用例集: 4c2363d0"
+  - generic [ref=e26]:
+    - generic [ref=e27]:
+      - text: 测试地址：
+      - textbox "测试地址：" [ref=e28]:
+        - /placeholder: http://192.168.110.213:8001
+    - generic [ref=e29]:
+      - generic [ref=e30]:
+        - text: 账号：
+        - textbox "账号：" [ref=e31]:
+          - /placeholder: zhanghong
+      - generic [ref=e32]:
+        - text: 密码：
+        - textbox "密码：" [ref=e33]:
+          - /placeholder: "****"
+    - button "1. 开始探索" [disabled] [ref=e34] [cursor=pointer]
