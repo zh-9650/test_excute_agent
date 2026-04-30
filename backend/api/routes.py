@@ -9,6 +9,7 @@ from backend.engine.parser.enricher import CaseEnricher
 from backend.config import Config
 from backend.storage.database import get_db
 from backend.engine.orchestrator import Orchestrator, RunState
+from backend.engine.executor.executor import SmartExecutor
 
 router = APIRouter()
 
@@ -169,7 +170,7 @@ async def start_exploration(payload: dict):
     cfg = Config()
     orch = Orchestrator(config=cfg, log_callback=_websocket_log)
     run_id = str(uuid.uuid4())[:8]
-    state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="exploring")
+    state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="exploring", start_time=time.time())
     _run_states[run_id] = state
 
     async def _run():

@@ -179,16 +179,32 @@ class Orchestrator:
         browser = BrowserController(headless=self.config.browser_headless)
         try:
             await browser.start()
+
             # 恢复登录态
-            await browser.goto(state.target_url)
+            storage_state = self.session_mgr.load_storage_state(state.run_id)
+            if storage_state:
+                await self._log(state, "info", "Restoring saved login session...")
+                await browser.page.context.add_cookies(storage_state.get("cookies", []))
+                await browser.goto(state.target_url)
+            else:
+                await self._log(state, "info", "No saved session, navigating to target...")
+                await browser.goto(state.target_url)
             await browser.wait_for_page_ready()
 
             executor_log = lambda msg: self._log(state, "ai", msg)
-            executor = SmartExecutor(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None, log_callback=executor_log)
+            ai_provider = self.config.create_provider() if self.config.ai_api_key else None
+            backup_provider = self.config.create_backup_provider() if self.config.ai_backup_model else None
+            executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log)
 
             for case in state.cases:
-                if case.id not in state.scripts and case.completeness not in ("complete", "enriched"):
+                if case.completeness not in ("complete", "enriched"):
                     continue
+
+                # 熔断检查
+                if executor.is_melted():
+                    await self._log(state, "warn", f"MELTDOWN: {executor.melt_reason()}")
+                    await self._log(state, "warn", "Stopping further execution")
+                    break
 
                 await self._log(state, "info", f"Executing: {case.title}")
                 case.transition_to(CaseStatus.RUNNING)
@@ -295,9 +311,15 @@ class Orchestrator:
                     await browser.page.click(submit_sel)
                     await browser.wait_for_page_ready(strategy="domcontentloaded")
                     await self._log(state, "info", "  Login completed")
+                    # 保存登录态供后续步骤使用
+                    cookies = await browser.page.context.cookies()
+                    self.session_mgr.save_storage_state(session.id, {"cookies": cookies})
+                    await self._log(state, "info", "  Login state saved")
                 else:
                     await browser.page.keyboard.press("Enter")
                     await self._log(state, "info", "  Pressed Enter to submit")
+                    cookies = await browser.page.context.cookies()
+                    self.session_mgr.save_storage_state(session.id, {"cookies": cookies})
             except Exception as e:
                 await self._log(state, "error", f"  Login failed: {e}")
         else:
@@ -320,11 +342,17 @@ class Orchestrator:
             await browser.wait_for_page_ready()
 
             executor_log = lambda msg: self._log(state, "ai", msg)
-            executor = SmartExecutor(browser=browser, ai=self.config.create_provider() if self.config.ai_api_key else None, log_callback=executor_log)
+            ai_provider = self.config.create_provider() if self.config.ai_api_key else None
+            backup_provider = self.config.create_backup_provider() if self.config.ai_backup_model else None
+            executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log)
 
             for case in state.cases:
                 if case.completeness not in ("complete", "enriched"):
                     continue
+
+                if executor.is_melted():
+                    await self._log(state, "warn", f"MELTDOWN: {executor.melt_reason()}")
+                    break
 
                 await self._log(state, "info", f"Executing: {case.title}")
                 case.transition_to(CaseStatus.RUNNING)

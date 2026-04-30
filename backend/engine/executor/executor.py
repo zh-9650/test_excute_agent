@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from backend.models.case import TestCase, CaseStatus
 from backend.engine.executor.healing import HealingStore
+from backend.engine.executor.ai_guard import AIGuard
 
 
 @dataclass
@@ -20,11 +21,13 @@ class ExecutionContext:
 class SmartExecutor:
     """逐步执行器：直接用 Playwright 按测试步骤操作，失败时 AI 实时介入"""
 
-    def __init__(self, browser=None, ai=None, log_callback=None):
+    def __init__(self, browser=None, ai=None, backup_ai=None, log_callback=None, ai_guard=None):
         self.browser = browser
         self.ai = ai
+        self.backup_ai = backup_ai
         self.healing = HealingStore()
         self._log = log_callback or (lambda msg: None)
+        self.guard = ai_guard or AIGuard()
 
     async def execute_case(self, ctx: ExecutionContext) -> dict:
         case = ctx.case
@@ -32,6 +35,7 @@ class SmartExecutor:
 
         all_passed = True
         for step in case.steps:
+            self.guard.record_step()
             result = await self._execute_step(ctx, step)
             ctx.step_results.append(result)
             if result["status"] != "passed":
@@ -40,12 +44,20 @@ class SmartExecutor:
                     break
 
         if all_passed:
+            self.guard.record_pass()
             case.transition_to(CaseStatus.PASSED)
             return {"case_id": case.id, "status": "passed", "steps": ctx.step_results}
         else:
+            self.guard.record_fail()
             final_status = "failed" if any(r.get("ai_judgment") == "bug" for r in ctx.step_results) else "error"
             case.transition_to(CaseStatus.FAILED if final_status == "failed" else CaseStatus.ERROR)
             return {"case_id": case.id, "status": final_status, "steps": ctx.step_results}
+
+    def is_melted(self) -> bool:
+        return self.guard.is_melted
+
+    def melt_reason(self) -> str:
+        return self.guard.melt_reason
 
     async def _execute_step(self, ctx: ExecutionContext, step) -> dict:
         action = step.action
@@ -144,45 +156,79 @@ class SmartExecutor:
                     return {"step": step.order, "action": action, "status": "failed",
                             "reason": "selector_exhausted"}
 
-                # 尝试自愈
+                # 尝试自愈知识库
                 if selector:
                     healing = self.healing.find(selector, self.browser.page.url)
                     if healing:
                         selector = healing["healed_selector"]
-                        await self._log(f"  Healing: using '{selector}'")
+                        await self._log(f"  [Healing] using '{selector}' (success={healing['success_count']})")
                         self.healing.increment_success(healing["original_selector"], healing["page_url_pattern"])
                         continue
 
-                # AI 介入
-                if self.ai and ctx.ai_call_count < 5:
-                    await self._log(f"  [AI] Analyzing failure...")
-                    try:
-                        page_url = self.browser.page.url
-                        page_summary = await self.browser.get_page_summary()
-                        judgment = await self.ai.analyze(
-                            system_prompt="You are a test engineer. The action failed. Analyze and return JSON: {judgment: selector_changed|element_missing|other, confidence, action: {new_selector}, reasoning}",
-                            user_prompt=f"Action: {action}\nSelector: {selector}\nPage: {json.dumps(page_summary, ensure_ascii=False)}"
-                        )
-                        ctx.ai_call_count += 1
-                        await self._log(f"  [AI] {judgment.judgment} (confidence: {judgment.confidence:.0%})")
+                # 同类型去重缓存
+                if selector and self.guard.get_cached(selector):
+                    selector = self.guard.get_cached(selector)
+                    await self._log(f"  [Cache] reusing healed selector: '{selector}'")
+                    continue
 
-                        if judgment.judgment == "selector_changed" and judgment.action.get("new_selector"):
-                            new_sel = judgment.action["new_selector"]
-                            self.healing.add(selector, new_sel, self._url_pattern(page_url))
-                            selector = new_sel
-                            await self._log(f"  [AI] New selector: {new_sel}")
-                            continue
+                # AI 介入（通过成本控制）
+                if not self.guard.can_call(ctx.case.id):
+                    await self._log(f"  [Guard] AI call blocked (case limit={ctx.ai_call_count}, melted={self.guard.is_melted})")
+                    return {"step": step.order, "action": action, "status": "failed", "reason": "ai_blocked"}
 
-                        if judgment.judgment == "element_missing":
-                            screenshot_path = f"test_artifacts/{ctx.case.suite_id}/screenshots/fail_{ctx.case.id}_step{step.order}.png"
-                            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
-                            await self.browser.take_screenshot(screenshot_path)
-                            await self._log(f"  BUG: element missing. Screenshot: {screenshot_path}")
-                            return {"step": step.order, "action": action, "status": "failed",
-                                    "ai_judgment": "bug", "ai_confidence": judgment.confidence,
-                                    "screenshot": screenshot_path}
-                    except Exception as ai_err:
-                        await self._log(f"  AI call failed: {ai_err}")
+                ai_to_use = self.ai
+                await self._log(f"  [AI] Analyzing failure (call #{self.guard.total_calls+1})...")
+                try:
+                    page_url = self.browser.page.url
+                    page_summary = await self.browser.get_page_summary()
+                    prompt = f"Action: {action}\nSelector: {selector}\nPage: {json.dumps(page_summary, ensure_ascii=False)}"
+                    judgment = await ai_to_use.analyze(
+                        system_prompt="You are a test engineer. Action failed. Return JSON: {judgment: selector_changed|element_missing|other, confidence, action: {new_selector}, reasoning}",
+                        user_prompt=prompt
+                    )
+                except Exception:
+                    # 降级到备用 AI
+                    if self.backup_ai:
+                        await self._log(f"  [Fallback] Primary AI failed, trying backup...")
+                        try:
+                            judgment = await self.backup_ai.analyze(
+                                system_prompt="You are a test engineer. Return JSON: {judgment, confidence, action: {new_selector}, reasoning}",
+                                user_prompt=prompt
+                            )
+                        except Exception:
+                            await self._log(f"  [Fallback] Backup AI also failed")
+                            return {"step": step.order, "action": action, "status": "error", "reason": "ai_unavailable"}
+                    else:
+                        await self._log(f"  [Error] AI unavailable, no backup configured")
+                        return {"step": step.order, "action": action, "status": "error", "reason": "ai_unavailable"}
+
+                ctx.ai_call_count += 1
+                self.guard.record_call(ctx.case.id)
+                await self._log(f"  [AI] {judgment.judgment} (confidence: {judgment.confidence:.0%})")
+
+                # 置信度门禁
+                if not self.guard.check_confidence(judgment.confidence):
+                    await self._log(f"  [Guard] Low confidence ({judgment.confidence:.0%} < {self.guard.confidence_threshold:.0%}), need human")
+                    return {"step": step.order, "action": action, "status": "blocked",
+                            "ai_judgment": judgment.judgment, "ai_confidence": judgment.confidence,
+                            "reason": "low_confidence"}
+
+                if judgment.judgment == "selector_changed" and judgment.action.get("new_selector"):
+                    new_sel = judgment.action["new_selector"]
+                    self.healing.add(selector, new_sel, self._url_pattern(page_url))
+                    self.guard.cache_selector(selector, new_sel)
+                    selector = new_sel
+                    await self._log(f"  [AI] Fixed: '{selector}' -> '{new_sel}'")
+                    continue
+
+                if judgment.judgment == "element_missing":
+                    screenshot_path = f"test_artifacts/{ctx.case.suite_id}/screenshots/fail_{ctx.case.id}_step{step.order}.png"
+                    os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                    await self.browser.take_screenshot(screenshot_path)
+                    await self._log(f"  [BUG] Element missing. Screenshot: {screenshot_path}")
+                    return {"step": step.order, "action": action, "status": "failed",
+                            "ai_judgment": "bug", "ai_confidence": judgment.confidence,
+                            "screenshot": screenshot_path, "ai_reasoning": judgment.reasoning}
 
     def _infer_selector(self, action: str, step) -> str:
         """从步骤描述推断选择器"""

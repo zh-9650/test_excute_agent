@@ -28,7 +28,20 @@ class SessionManager:
     def __init__(self, storage_dir: str = "data/sessions"):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self._sessions: dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = self._load_all()
+
+    def _load_all(self) -> dict[str, SessionState]:
+        result = {}
+        for f in self.storage_dir.glob("*_state.json"):
+            sid = f.stem.replace("_state", "")
+            try:
+                data = json.loads(f.read_text())
+                state = SessionState(id=sid, target_url="", username="", password="")
+                state.storage_state = data
+                result[sid] = state
+            except Exception:
+                pass
+        return result
 
     def create(self, target_url: str, username: str, password: str) -> SessionState:
         sid = str(uuid.uuid4())[:8]
