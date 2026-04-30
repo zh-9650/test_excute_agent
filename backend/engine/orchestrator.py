@@ -165,6 +165,19 @@ class Orchestrator:
             cases.append(case)
         return cases
 
+    async def explore_only(self, state: RunState, target_url: str, credentials: dict):
+        """仅探索：加载用例 -> 打开浏览器 -> 逐页收集元素 -> 返回元素地图"""
+        state.cases = self._load_cases(state.suite_id)
+        await self._log(state, "info", f"Loaded {len(state.cases)} test cases")
+        state.status = "exploring"
+        exploration = await self._explore(state, target_url, credentials)
+        state.exploration_result = exploration
+        return exploration
+
+    async def execute_only(self, state: RunState):
+        """仅执行：用已有脚本执行测试"""
+        await self._execute_all(state, {})
+
     async def _explore(self, state: RunState, target_url: str, credentials: dict) -> dict:
         browser = BrowserController(headless=self.config.browser_headless)
         try:

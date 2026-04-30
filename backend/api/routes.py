@@ -1,7 +1,8 @@
 import json
 import uuid
 import asyncio
-from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+import time
+from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from backend.engine.parser.csv_parser import CSVParser
 from backend.engine.parser.enricher import CaseEnricher
@@ -153,43 +154,127 @@ async def test_logs_websocket(ws: WebSocket, run_id: str):
         _active_ws[run_id].remove(ws)
 
 
-@router.post("/tests/run")
-async def run_tests(payload: dict):
-    """启动测试执行（异步后台任务）"""
+# ========== 分步执行 API ==========
+
+@router.post("/tests/explore")
+async def start_exploration(payload: dict):
+    """Step 1: 仅探索 — 打开浏览器、收集元素"""
     suite_id = payload.get("suite_id")
     target_url = payload.get("target_url")
     credentials = payload.get("credentials", {})
-    enrichments = payload.get("enrichments", {})
 
     if not suite_id or not target_url:
-        raise HTTPException(400, "suite_id and target_url are required")
+        raise HTTPException(400, "suite_id and target_url required")
 
     cfg = Config()
-    orchestrator = Orchestrator(config=cfg, log_callback=_websocket_log)
-
+    orch = Orchestrator(config=cfg, log_callback=_websocket_log)
     run_id = str(uuid.uuid4())[:8]
-
-    # 先占位，让 status API 能立即返回
-    placeholder = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="running")
-    _run_states[run_id] = placeholder
+    state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="exploring")
+    _run_states[run_id] = state
 
     async def _run():
         try:
-            await orchestrator.run(suite_id, target_url, credentials, enrichments, state=placeholder)
+            exploration = await orch.explore_only(state, target_url, credentials)
+            state.exploration_result = exploration
+            if exploration.get("error"):
+                state.status = "failed"
+            else:
+                state.status = "explored"
+                state.log("info", f"Exploration complete: {exploration.get('total_elements', 0)} elements found")
         except Exception as e:
-            import traceback
-            err_state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="failed")
-            err_state.log("error", f"执行异常: {e}\n{traceback.format_exc()[:500]}")
-            _run_states[run_id] = err_state
-            if run_id in _active_ws:
-                for ws in _active_ws[run_id]:
-                    try:
-                        await ws.send_text(json.dumps({"ts": 0, "level": "error", "msg": f"执行异常: {e}"}))
-                    except Exception:
-                        pass
+            state.status = "failed"
+            state.log("error", f"Exploration failed: {e}")
 
     asyncio.create_task(_run())
+    return {"run_id": run_id, "status": "exploring"}
 
+
+@router.post("/tests/generate")
+async def start_generation(payload: dict):
+    """Step 2: 生成脚本 — 基于探索结果"""
+    run_id = payload.get("run_id")
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+
+    state.status = "generating"
+    cfg = Config()
+    orch = Orchestrator(config=cfg, log_callback=_websocket_log)
+
+    async def _run():
+        try:
+            element_map = orch._build_element_map(state.exploration_result)
+            for case in state.cases:
+                if case.completeness not in ("complete", "enriched"):
+                    continue
+                script = None
+                if cfg.ai_api_key:
+                    script = await orch.generator.generate_with_ai(case, element_map)
+                if not script:
+                    script = orch.generator.build_script_template(case, element_map)
+                if orch.generator.precheck(script)["valid"]:
+                    state.scripts[case.id] = script
+                    state.log("info", f"Script: {case.title}")
+            state.status = "generated"
+            state.log("info", f"Done: {len(state.scripts)} scripts ready")
+        except Exception as e:
+            state.status = "failed"
+            state.log("error", f"Generation failed: {e}")
+
+    asyncio.create_task(_run())
+    return {"run_id": run_id, "status": "generating"}
+
+
+@router.post("/tests/execute")
+async def start_execution(payload: dict):
+    """Step 3: 执行脚本"""
+    run_id = payload.get("run_id")
+    state = _run_states.get(run_id)
+    if not state:
+        raise HTTPException(404, "Run not found")
+
+    state.status = "running"
+    cfg = Config()
+    orch = Orchestrator(config=cfg, log_callback=_websocket_log)
+
+    async def _run():
+        try:
+            await orch.execute_only(state)
+            executor = SmartExecutor()
+            analysis = executor.classify_results(state.case_results)
+            orch._generate_report(state, analysis)
+            state.status = "completed"
+            state.end_time = time.time()
+            state.log("info", f"Done: {state.summary()['passed']}P/{state.summary()['failed']}F")
+        except Exception as e:
+            state.status = "failed"
+            state.log("error", f"Execution failed: {e}")
+
+    asyncio.create_task(_run())
+    return {"run_id": run_id, "status": "running"}
+
+
+@router.post("/tests/run")
+async def run_all(payload: dict):
+    """一键执行全部（兼容旧接口）"""
+    suite_id = payload.get("suite_id")
+    target_url = payload.get("target_url")
+    credentials = payload.get("credentials", {})
+
+    cfg = Config()
+    orch = Orchestrator(config=cfg, log_callback=_websocket_log)
+    run_id = str(uuid.uuid4())[:8]
+    state = RunState(run_id=run_id, suite_id=suite_id, target_url=target_url, credentials=credentials, status="running")
+    _run_states[run_id] = state
+
+    async def _run():
+        try:
+            await orch.run(suite_id, target_url, credentials, state=state)
+        except Exception as e:
+            state.status = "failed"
+            state.log("error", f"Run failed: {e}")
+
+    asyncio.create_task(_run())
     return {"run_id": run_id, "status": "started"}
 
 
