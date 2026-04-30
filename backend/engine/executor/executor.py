@@ -21,13 +21,14 @@ class ExecutionContext:
 class SmartExecutor:
     """逐步执行器：直接用 Playwright 按测试步骤操作，失败时 AI 实时介入"""
 
-    def __init__(self, browser=None, ai=None, backup_ai=None, log_callback=None, ai_guard=None):
+    def __init__(self, browser=None, ai=None, backup_ai=None, log_callback=None, ai_guard=None, target_url=""):
         self.browser = browser
         self.ai = ai
         self.backup_ai = backup_ai
         self.healing = HealingStore()
         self._log = log_callback or (lambda msg: None)
         self.guard = ai_guard or AIGuard()
+        self._base_url = target_url
 
     async def execute_case(self, ctx: ExecutionContext) -> dict:
         case = ctx.case
@@ -67,10 +68,11 @@ class SmartExecutor:
             if any(kw in action for kw in ["进入", "打开", "跳转"]):
                 if target_url:
                     await self.browser.goto(target_url)
-                    await self.browser.wait_for_page_ready()
-                    await self._log(f"  Navigated to {target_url}")
                 else:
-                    await self._log(f"  Skip navigation (no URL)")
+                    # Use the base target URL
+                    await self.browser.goto(self._base_url)
+                await self.browser.wait_for_page_ready()
+                await self._log(f"  Navigated: {target_url or self._base_url}")
                 return {"step": step.order, "action": action, "status": "passed"}
 
             elif "点击" in action:

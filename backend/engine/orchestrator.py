@@ -194,7 +194,7 @@ class Orchestrator:
             executor_log = lambda msg: self._log(state, "ai", msg)
             ai_provider = self.config.create_provider() if self.config.ai_api_key else None
             backup_provider = self.config.create_backup_provider() if self.config.ai_backup_model else None
-            executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log)
+            executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log, target_url=state.target_url)
 
             for case in state.cases:
                 if case.completeness not in ("complete", "enriched"):
@@ -344,7 +344,7 @@ class Orchestrator:
             executor_log = lambda msg: self._log(state, "ai", msg)
             ai_provider = self.config.create_provider() if self.config.ai_api_key else None
             backup_provider = self.config.create_backup_provider() if self.config.ai_backup_model else None
-            executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log)
+            executor = SmartExecutor(browser=browser, ai=ai_provider, backup_ai=backup_provider, log_callback=executor_log, target_url=state.target_url)
 
             for case in state.cases:
                 if case.completeness not in ("complete", "enriched"):

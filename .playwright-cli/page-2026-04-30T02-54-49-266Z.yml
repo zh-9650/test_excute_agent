@@ -1,0 +1,60 @@
+- generic [ref=e22]:
+  - button "← 返回" [ref=e23] [cursor=pointer]
+  - heading "执行测试" [level=1] [ref=e24]
+  - paragraph [ref=e25]: "用例集: e93e8374"
+  - generic [ref=e35]:
+    - generic [ref=e36]: 1. 探索 ✓
+    - generic [ref=e37]: 2. 生成 ✓
+    - generic [ref=e38]: 3. 执行 ✓
+  - generic [ref=e66]:
+    - button "实时日志 16" [ref=e71] [cursor=pointer]
+    - button "脚本 1" [ref=e68] [cursor=pointer]
+  - generic [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]: "[INFO]"
+      - text: Navigating to http://192.168.110.213:8001 and detecting login form...
+    - generic [ref=e42]:
+      - generic [ref=e43]: "[INFO]"
+      - text: No login form detected, skipping login
+    - generic [ref=e44]:
+      - generic [ref=e45]: "[INFO]"
+      - text: "Exploration plan: 1 pages, 1 cases"
+    - generic [ref=e46]:
+      - generic [ref=e47]: "[INFO]"
+      - text: "Target pages: /文档中心(#145) (1 cases)"
+    - generic [ref=e48]:
+      - generic [ref=e49]: "[INFO]"
+      - text: "[1/1] Navigating to: http://192.168.110.213:8001/文档中心(#145)"
+    - generic [ref=e53]:
+      - generic [ref=e54]: "[INFO]"
+      - text: Collecting interactive elements...
+    - generic [ref=e55]:
+      - generic [ref=e56]: "[INFO]"
+      - text: Collected 3 elements [button:1 input:2]
+    - generic [ref=e57]:
+      - generic [ref=e58]: "[INFO]"
+      - text: "Screenshot saved: test_artifacts/2426fb24/screenshots/page_1.png"
+    - generic [ref=e59]:
+      - generic [ref=e60]: "[INFO]"
+      - text: "Exploration done: 1/1 pages, 3 elements, coverage 100%"
+    - generic [ref=e61]:
+      - generic [ref=e62]: "[INFO]"
+      - text: "--- Exploration done ---"
+    - generic [ref=e69]:
+      - generic [ref=e70]: "[INFO]"
+      - text: "--- Generation done ---"
+    - generic [ref=e72]:
+      - generic [ref=e73]: "[INFO]"
+      - text: No saved session, navigating to target...
+    - generic [ref=e74]:
+      - generic [ref=e75]: "[INFO]"
+      - text: "Executing: 文档中心能正常进入"
+    - generic [ref=e76]:
+      - generic [ref=e77]: "[AI]"
+      - text: "[文档中心能正常进入] Starting execution (1 steps)"
+    - generic [ref=e78]:
+      - generic [ref=e79]: "[AI]"
+      - text: Skip navigation (no URL)
+    - generic [ref=e80]:
+      - generic [ref=e81]: "[INFO]"
+      - text: "[PASS] 文档中心能正常进入"

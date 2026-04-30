@@ -1,0 +1,24 @@
+- generic [ref=e22]:
+  - button "← 返回" [ref=e23] [cursor=pointer]
+  - heading "执行测试" [level=1] [ref=e24]
+  - paragraph [ref=e25]: "用例集: e93e8374"
+  - generic [ref=e35]:
+    - generic [ref=e36]: 1. 探索 ✓
+    - generic [ref=e37]: 2. 生成
+    - generic [ref=e38]: 3. 执行
+  - generic [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]: "[INFO]"
+      - text: Navigating to http://192.168.110.213:8001 and detecting login form...
+    - generic [ref=e42]:
+      - generic [ref=e43]: "[INFO]"
+      - text: No login form detected, skipping login
+    - generic [ref=e44]:
+      - generic [ref=e45]: "[INFO]"
+      - text: "Exploration plan: 1 pages, 1 cases"
+    - generic [ref=e46]:
+      - generic [ref=e47]: "[INFO]"
+      - text: "Target pages: /文档中心(#145) (1 cases)"
+    - generic [ref=e48]:
+      - generic [ref=e49]: "[INFO]"
+      - text: "[1/1] Navigating to: http://192.168.110.213:8001/文档中心(#145)"

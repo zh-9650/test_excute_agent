@@ -1,0 +1,10 @@
+- generic [ref=e3]:
+  - heading "AI 自动化测试平台" [level=1] [ref=e4]
+  - generic [ref=e5]:
+    - generic [ref=e6]: 上传 CSV
+    - generic [ref=e7]: →补全用例
+    - generic [ref=e8]: →探索 & 执行
+  - generic [ref=e9]:
+    - button "Choose File" [ref=e10]
+    - button "上传用例" [disabled] [ref=e11]
+    - paragraph [ref=e12]: 支持禅道导出的 CSV，含「所属模块」「测试点/用例标题」「步骤」「预期」等列
