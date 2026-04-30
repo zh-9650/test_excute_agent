@@ -7,7 +7,8 @@ def find_enabled_btn(page, containing=''):
             return b
     return None
 
-def test_flow():
+def if __name__ == "__main__":
+    test_flow():
     p = sync_playwright().start()
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
@@ -112,4 +113,5 @@ def test_flow():
     browser.close()
     p.stop()
 
-test_flow()
+if __name__ == "__main__":
+    test_flow()
