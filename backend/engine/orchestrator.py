@@ -91,6 +91,7 @@ class Orchestrator:
             state.end_time = time.time()
             await self._log(state, "error", f"Target unreachable: {exploration['error']}")
             await self._log(state, "error", "Test aborted - cannot reach target URL")
+            self._generate_report(state, {"bugs": [], "script_issues": [], "environment_issues": [{"reason": exploration["error"]}], "case_issues": []})
             return state
 
         # Phase 2: Script Generation
