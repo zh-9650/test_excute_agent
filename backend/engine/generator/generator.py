@@ -1,6 +1,10 @@
 import ast
 import json
 from backend.models.case import TestCase
+from backend.engine.explorer.prompts import (
+    SCRIPT_GENERATION_SYSTEM_PROMPT,
+    SCRIPT_GENERATION_TEMPLATE,
+)
 
 
 class ScriptGenerator:
@@ -105,18 +109,21 @@ async def test_{case.id.replace("-", "_")}():
             if not step_record.success:
                 continue
             action = step_record.ai_action
-            selector = step_record.ai_selector
-            value = step_record.ai_value
+            selector = step_record.ai_selector.replace("'", "\\'")
+            value = step_record.ai_value.replace("'", "\\'")
 
             if action == "navigate":
                 steps_code.append(f'            await page.goto("{value}")')
             elif action == "click":
                 steps_code.append(f"            await page.click('{selector}')")
             elif action == "fill":
-                value_escaped = value.replace("'", "\\'")
-                steps_code.append(f"            await page.fill('{selector}', '{value_escaped}')")
+                steps_code.append(f"            await page.click('{selector}')")
+                steps_code.append(f"            await page.fill('{selector}', '')")
+                steps_code.append(f"            await page.type('{selector}', '{value}', delay=50)")
             elif action == "select":
                 steps_code.append(f"            await page.select_option('{selector}', '{value}')")
+            elif action == "hover":
+                steps_code.append(f"            await page.hover('{selector}')")
             elif action == "scroll":
                 steps_code.append('            await page.evaluate("window.scrollBy(0, 300)")')
             elif action == "wait":
@@ -182,6 +189,136 @@ async def test_{case.id.replace("-", "_")}():
 
         if "async def test_" not in script:
             errors.append("Missing async test function")
+
+        forbidden = ["time.sleep", "driver.", "selenium"]
+        for fb in forbidden:
+            if fb in script:
+                errors.append(f"Uses non-Playwright API: {fb}")
+
+        return {"valid": len(errors) == 0, "errors": errors}
+
+
+class AIScriptGenerator:
+    """AI 驱动的脚本生成器 — 根据探索录制数据生成 Codex 风格的结构化 Playwright 脚本"""
+
+    def __init__(self, ai):
+        self.ai = ai
+
+    async def generate_from_recording(self, case, recording) -> str:
+        """从 ExplorationRecording 生成结构化 Playwright 脚本"""
+        # 1. 构建步骤详情
+        steps_detail = []
+        for i, step in enumerate(recording.steps):
+            step_info = {
+                "order": i + 1,
+                "action": step.ai_action,
+                "selector": step.ai_selector,
+                "value": step.ai_value,
+                "reasoning": step.ai_reasoning,
+                "success": step.success,
+                "url_before": step.url_before,
+                "url_after": step.url_after,
+                "page_title_before": step.page_title_before,
+                "page_title_after": step.page_title_after,
+                "target_element_text": step.target_element_text,
+                "parent_context": step.parent_context,
+                "semantic_action": step.semantic_action,
+                "function_name_hint": step.function_name_hint,
+            }
+            steps_detail.append(step_info)
+
+        # 2. 构建页面地图摘要
+        page_maps_summary = []
+        for pm in recording.page_maps:
+            pm_info = {
+                "page_type": pm.page_type,
+                "page_url": pm.page_url,
+                "page_title": pm.page_title,
+                "sections": [{"name": s.name, "type": s.section_type, "count": s.element_count} for s in pm.sections],
+                "key_elements": pm.key_elements,
+                "summary": pm.observation_summary,
+            }
+            page_maps_summary.append(pm_info)
+
+        # 3. 构建上下文
+        context = {
+            "case_title": recording.case_title,
+            "case_module": recording.case_module,
+            "case_expected": recording.case_expected,
+            "steps_detail": steps_detail,
+            "page_maps": page_maps_summary,
+            "identified_functions": recording.identified_functions,
+            "base_url": steps_detail[0]["url_before"] if steps_detail else "",
+        }
+
+        context_json = json.dumps(context, ensure_ascii=False, indent=2)
+
+        # 4. 调用 AI 生成脚本
+        system_prompt = SCRIPT_GENERATION_SYSTEM_PROMPT
+        user_prompt = SCRIPT_GENERATION_TEMPLATE.format(
+            case_title=recording.case_title,
+            case_module=recording.case_module,
+            case_expected=recording.case_expected,
+            context_json=context_json,
+        )
+
+        raw_script = await self.ai.generate_structured_script(system_prompt, user_prompt)
+
+        # 5. 后处理
+        script = self._post_process(raw_script, case.id)
+
+        # 6. 语法检查
+        check = self.precheck(script)
+        if not check["valid"]:
+            # 语法错误时尝试修复常见问题
+            script = self._try_fix_syntax(script, check["errors"])
+
+        return script
+
+    def _post_process(self, script: str, case_id: str) -> str:
+        """后处理：清理、标准化"""
+        # 确保有正确的导入
+        if "from playwright.async_api" not in script and "import playwright" not in script:
+            script = "import asyncio\nfrom playwright.async_api import async_playwright\n\n" + script
+
+        # 确保有 asyncio.run
+        if "asyncio.run(" not in script and "if __name__" not in script:
+            script += '\n\nif __name__ == "__main__":\n    asyncio.run(main())\n'
+
+        return script.strip()
+
+    def _try_fix_syntax(self, script: str, errors: list[str]) -> str:
+        """尝试修复常见语法问题"""
+        # 如果有未闭合的字符串，尝试截断到最后一个完整语句
+        lines = script.split("\n")
+        for i in range(len(lines) - 1, -1, -1):
+            try:
+                ast.parse("\n".join(lines[:i + 1]))
+                # 找到能解析的部分，加上结束代码
+                fixed = "\n".join(lines[:i + 1])
+                if "async def main" in fixed and "browser.close()" not in fixed:
+                    fixed += '\n        finally:\n            await browser.close()\n'
+                return fixed
+            except SyntaxError:
+                continue
+        return script
+
+    def precheck(self, script: str) -> dict:
+        """语法和结构检查"""
+        errors = []
+        try:
+            ast.parse(script)
+        except SyntaxError as e:
+            errors.append(f"Syntax error: {e}")
+            return {"valid": False, "errors": errors}
+
+        required_imports = ["playwright"]
+        for imp in required_imports:
+            if imp not in script.lower():
+                errors.append(f"Missing import: {imp}")
+
+        if "async def" not in script:
+            errors.append("Missing async function")
 
         forbidden = ["time.sleep", "driver.", "selenium"]
         for fb in forbidden:

@@ -9,3 +9,11 @@ node_modules/
 test_artifacts/
 *.db
 .DS_Store
+.playwright-cli/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.webp

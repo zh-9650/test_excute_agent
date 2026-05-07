@@ -52,7 +52,7 @@ export default function CaseUpload({ onStartTest }: { onStartTest: (suiteId: str
     ).length;
     if (result?.suite_id) {
       try {
-        await fetch(`http://localhost:8765/api/v1/cases/${result.suite_id}/enrich`, {
+        await fetch(`http://localhost:8000/api/v1/cases/${result.suite_id}/enrich`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ enrichments }),
@@ -70,7 +70,7 @@ export default function CaseUpload({ onStartTest }: { onStartTest: (suiteId: str
   };
 
   return (
-    <div style={{ maxWidth: 800, margin: "40px auto", fontFamily: "system-ui" }}>
+    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 24px", fontFamily: "system-ui" }}>
       <h1>AI 自动化测试平台</h1>
 
       {/* ---- Step indicator ---- */}
@@ -154,7 +154,7 @@ export default function CaseUpload({ onStartTest }: { onStartTest: (suiteId: str
             </p>
           </div>
 
-          {/* Stats */}
+          {/* Stats + 主操作按钮 */}
           <div
             style={{
               background: "#f9f9f9",
@@ -167,16 +167,51 @@ export default function CaseUpload({ onStartTest }: { onStartTest: (suiteId: str
               用例集 ID: <b>{result.suite_id}</b> | 总用例: <b>{result.case_count}</b>
             </p>
             <p>
-              ✅ 可直接生成脚本: <b>{result.enrichment?.ready || 0}</b>
+              ✅ 可直接探索: <b>{result.enrichment?.ready || 0}</b>
               {" | "}
-              ⚠️ 需要补全: <b>{result.enrichment?.needs_enrichment || 0}</b>
+              ⚠️ 待补全: <b>{result.enrichment?.needs_enrichment || 0}</b>
             </p>
+
+            {/* 主操作按钮 — 始终可见 */}
+            <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <button
+                onClick={() => result?.suite_id && onStartTest(result.suite_id)}
+                style={{
+                  padding: "12px 32px",
+                  background: "#059669",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 16,
+                  fontWeight: 600,
+                }}
+              >
+                🚀 直接开始探索
+              </button>
+              <button
+                onClick={handleReset}
+                style={{
+                  padding: "12px 24px",
+                  background: "#6b7280",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+              >
+                上传新用例
+              </button>
+            </div>
           </div>
 
-          {/* Enrichment forms */}
+          {/* 可折叠的补全区域 */}
           {result.enrichment?.incomplete_cases?.length > 0 && (
-            <>
-              <h3>待补全用例（{result.enrichment.incomplete_cases.length} 条）</h3>
+            <details style={{ marginBottom: 20 }}>
+              <summary style={{ cursor: "pointer", fontSize: 14, color: "#6b7280", marginBottom: 12 }}>
+                📝 补全用例信息（可选，{result.enrichment.incomplete_cases.length} 条待补全）
+              </summary>
               {result.enrichment.incomplete_cases.map((c: EnrichmentCase, i: number) => (
                 <div
                   key={c.case_id}
@@ -232,39 +267,19 @@ export default function CaseUpload({ onStartTest }: { onStartTest: (suiteId: str
               <button
                 onClick={handleSubmitEnrichments}
                 style={{
-                  marginTop: 16,
+                  marginTop: 8,
                   padding: "10px 24px",
                   background: "#2563eb",
                   color: "#fff",
                   border: "none",
                   borderRadius: 6,
                   cursor: "pointer",
-                  fontSize: 16,
+                  fontSize: 14,
                 }}
               >
-                保存补全信息 →
+                保存补全信息
               </button>
-            </>
-          )}
-
-          {result.enrichment?.needs_enrichment === 0 && result.case_count > 0 && (
-            <div style={{ textAlign: "center", padding: 20 }}>
-              <p>🎉 所有用例均完整，可直接进入下一步！</p>
-              <button
-                onClick={() => result?.suite_id && onStartTest(result.suite_id)}
-                style={{
-                  padding: "10px 24px",
-                  background: "#2563eb",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 16,
-                }}
-              >
-                进入探索 & 执行 →
-              </button>
-            </div>
+            </details>
           )}
         </>
       )}

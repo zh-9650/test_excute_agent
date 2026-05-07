@@ -6,13 +6,15 @@ from pathlib import Path
 class Config:
     def __init__(self, config_path: str = ""):
         self.ai_provider: str = "openai_compatible"
-        self.ai_model: str = "Qwen3.5-122B"
-        self.ai_base_url: str = "https://qwen.cangjieit.cn:8443/v1"
-        self.ai_api_key: str = "sk-Q7m9X2pL4vR8nK1jW5tY3bH6cF0dG9sA"
+        self.ai_model: str = "mimo-v2.5-pro"
+        self.ai_base_url: str = "https://api.xiaomimimo.com/v1"
+        self.ai_api_key: str = "sk-cdo1vta3ysjftx79tyw814xnbycre53h8cdqbbuhsolxo9jz"
         self.ai_backup_model: str = ""
         self.ai_backup_base_url: str = ""
         self.ai_backup_api_key: str = ""
         self.browser_headless: bool = False
+        # v3-only: BrowserTools + Action IR + 确定性编译生成
+        self.use_v3_engine: bool = True
 
         if config_path and Path(config_path).exists():
             data = json.loads(Path(config_path).read_text(encoding="utf-8"))

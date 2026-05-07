@@ -61,3 +61,20 @@ def test_get_healing():
 def test_clear_healing():
     resp = client.post("/api/v1/healing/clear")
     assert resp.status_code == 200
+
+
+def test_list_runs_empty():
+    resp = client.get("/api/v1/runs")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_get_run_not_found():
+    resp = client.get("/api/v1/runs/nonexistent")
+    assert resp.status_code == 404
+
+
+def test_pause_resume_stop_not_found():
+    assert client.post("/api/v1/tests/nonexistent/pause").status_code == 404
+    assert client.post("/api/v1/tests/nonexistent/resume").status_code == 404
+    assert client.post("/api/v1/tests/nonexistent/stop").status_code == 404

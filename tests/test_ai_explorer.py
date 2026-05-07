@@ -93,9 +93,15 @@ async def test_explore_case_success():
         "confidence": 0.95
     })
 
-    # Mock page.click
+    # Mock page methods
     browser.page = MagicMock()
     browser.page.click = AsyncMock()
+    browser.page.wait_for_selector = AsyncMock()
+    browser.page.fill = AsyncMock()
+    browser.page.type = AsyncMock()
+    browser.page.title = AsyncMock(return_value="Test Page")
+    browser.page.url = "http://localhost:3000/login"
+    browser.console_log_count = MagicMock(return_value=0)
 
     explorer = AIExplorer(browser=browser, ai_provider=ai)
 
@@ -130,6 +136,10 @@ async def test_explore_case_failure_after_retries():
 
     browser.page = MagicMock()
     browser.page.click = AsyncMock(side_effect=Exception("Element not found"))
+    browser.page.wait_for_selector = AsyncMock()
+    browser.page.title = AsyncMock(return_value="Test Page")
+    browser.page.url = "http://localhost:3000/test"
+    browser.console_log_count = MagicMock(return_value=0)
 
     explorer = AIExplorer(browser=browser, ai_provider=ai, max_step_retries=2)
 
@@ -150,9 +160,14 @@ async def test_execute_action_types():
     browser.page = MagicMock()
     browser.page.click = AsyncMock()
     browser.page.fill = AsyncMock()
+    browser.page.type = AsyncMock()
     browser.page.select_option = AsyncMock()
     browser.page.evaluate = AsyncMock()
+    browser.page.wait_for_selector = AsyncMock()
+    browser.page.hover = AsyncMock()
+    browser.page.drag_and_drop = AsyncMock()
     browser.goto = AsyncMock()
+    browser.console_log_count = MagicMock(return_value=0)
 
     ai = MagicMock()
     explorer = AIExplorer(browser=browser, ai_provider=ai)
@@ -165,8 +180,9 @@ async def test_execute_action_types():
     r = await explorer._execute_action("fill", "input.name", "admin")
     assert r["success"] is True
 
-    # navigate
-    r = await explorer._execute_action("navigate", "", "http://test.com")
+    # hover
+    browser.page.hover = AsyncMock()
+    r = await explorer._execute_action("hover", "div.card", "")
     assert r["success"] is True
 
     # wait

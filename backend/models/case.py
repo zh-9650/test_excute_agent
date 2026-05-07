@@ -43,6 +43,8 @@ class Step:
 
 @dataclass
 class TestCase:
+    __test__ = False  # 防止 pytest 收集此 dataclass
+
     id: str
     suite_id: str
     module: str

@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 
-const API = "http://localhost:8765/api/v1";
+const API = "http://localhost:8000/api/v1";
 
 interface Props { suiteId: string; onBack: () => void; }
 
@@ -16,19 +16,36 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
   const [report, setReport] = useState<string | null>(null);
   const [scripts, setScripts] = useState<Record<string, string>>({});
   const [view, setView] = useState<"logs" | "report" | "scripts">("logs");
+  const [paused, setPaused] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   const addLog = (entry: { ts: number; level: string; msg: string }) => {
     setLogs((prev) => [...prev, entry]);
   };
 
-  const connectWS = async (rid: string) => {
-    const ws = new WebSocket(`ws://localhost:8765/api/v1/tests/${rid}/ws`);
-    wsRef.current = ws;
-    await new Promise<void>((resolve) => {
-      ws.onopen = () => resolve();
-      ws.onmessage = (e) => addLog(JSON.parse(e.data));
-    });
+  const connectWS = async (rid: string, retries = 3) => {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        const ws = new WebSocket(`ws://localhost:8000/api/v1/tests/${rid}/ws`);
+        wsRef.current = ws;
+        await new Promise<void>((resolve, reject) => {
+          ws.onopen = () => resolve();
+          ws.onerror = (e) => reject(e);
+          ws.onmessage = (e) => addLog(JSON.parse(e.data));
+          ws.onclose = () => {
+            // 自动重连（仅在执行中）
+            if (["exploring", "generating", "running"].includes(step) && attempt < retries - 1) {
+              setTimeout(() => connectWS(rid, retries - attempt), 2000);
+            }
+          };
+        });
+        return; // 成功连接
+      } catch (e) {
+        if (attempt < retries - 1) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
   };
 
   const pollUntilDone = (rid: string, targetStatus: string[]): Promise<string> => {
@@ -78,7 +95,7 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
 
   const handleExecute = async () => {
     if (!runId) return;
-    setStep("running");
+    setStep("running"); setPaused(false);
     await fetch(`${API}/tests/execute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: runId }) });
     await connectWS(runId);
     const status = await pollUntilDone(runId, ["completed", "failed"]);
@@ -92,6 +109,22 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
       const rpR = await fetch(`${API}/reports/${runId}`);
       if (rpR.ok) setReport((await rpR.json()).report);
     } catch (e) {}
+  };
+
+  const handlePause = async () => {
+    if (!runId) return;
+    if (paused) {
+      await fetch(`${API}/tests/${runId}/resume`, { method: "POST" });
+      setPaused(false);
+    } else {
+      await fetch(`${API}/tests/${runId}/pause`, { method: "POST" });
+      setPaused(true);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!runId) return;
+    await fetch(`${API}/tests/${runId}/stop`, { method: "POST" });
   };
 
   const tabs = [
@@ -149,9 +182,26 @@ export default function ExecuteTest({ suiteId, onBack }: Props) {
           <button onClick={handleGenerate} style={{ padding: "10px 24px", background: "#6b7280", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>重新生成</button>
         </div>
       )}
+      {step === "running" && (
+        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          <button onClick={handlePause}
+            style={{ padding: "10px 24px", background: paused ? "#059669" : "#d97706", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
+            {paused ? "恢复执行" : "暂停"}
+          </button>
+          <button onClick={handleStop}
+            style={{ padding: "10px 24px", background: "#6b7280", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
+            停止执行
+          </button>
+        </div>
+      )}
       {step === "failed" && (
         <div style={{ marginBottom: 16 }}>
           <button onClick={() => setStep("config")} style={{ padding: "10px 24px", background: "#6b7280", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>返回重试</button>
+        </div>
+      )}
+      {step === "completed" && result && result.failed > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <button onClick={handleExecute} style={{ padding: "10px 24px", background: "#d97706", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>重新执行失败用例</button>
         </div>
       )}
 

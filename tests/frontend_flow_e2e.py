@@ -45,7 +45,7 @@ def test_flow():
         ph = inp.get_attribute('placeholder') or ''
         tp = inp.get_attribute('type') or ''
         if '192.168' in ph:
-            inp.fill('http://192.168.110.213:8001')
+            inp.fill('http://192.168.31.155')
             print('[OK] URL filled')
             break
 

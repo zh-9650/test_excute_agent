@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -69,9 +70,20 @@ class SmartExecutor:
                 if target_url:
                     await self.browser.goto(target_url)
                 else:
-                    # Use the base target URL
                     await self.browser.goto(self._base_url)
                 await self.browser.wait_for_page_ready()
+                await asyncio.sleep(1)
+
+                # 验证没有卡在登录页
+                try:
+                    pwd = self.browser.page.locator("input[type='password']")
+                    if await pwd.count() > 0 and await pwd.first.is_visible():
+                        await self._log(f"  WARNING: landed on login page after navigation!")
+                        return {"step": step.order, "action": action, "status": "failed",
+                                "reason": "Navigation landed on login page instead of target"}
+                except Exception:
+                    pass
+
                 await self._log(f"  Navigated: {target_url or self._base_url}")
                 return {"step": step.order, "action": action, "status": "passed"}
 
@@ -116,7 +128,7 @@ class SmartExecutor:
 
             else:
                 await self._log(f"  Unrecognized action: {action[:60]}")
-                return {"step": step.order, "action": action, "status": "passed"}
+                return {"step": step.order, "action": action, "status": "error", "reason": f"Unrecognized action: {action[:80]}"}
 
         except Exception as e:
             await self._log(f"  Step error: {e}")

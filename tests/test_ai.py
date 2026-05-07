@@ -18,8 +18,8 @@ def test_ai_response_model():
 def test_config_defaults():
     config = Config()
     assert config.ai_provider == "openai_compatible"
-    assert config.ai_model == "Qwen3.5-122B"
-    assert config.ai_base_url == "https://qwen.cangjieit.cn:8443/v1"
+    assert config.ai_model == "mimo-v2.5-pro"
+    assert config.ai_base_url == "https://api.xiaomimimo.com/v1"
 
 
 def test_config_from_env(monkeypatch):
@@ -53,7 +53,7 @@ def test_config_create_provider():
     config.ai_api_key = "sk-test"
     provider = config.create_provider()
     assert provider is not None
-    assert provider.base_url == "https://qwen.cangjieit.cn:8443/v1"
+    assert provider.base_url == "https://api.xiaomimimo.com/v1"
 
 
 def test_config_create_backup_provider_without_config():

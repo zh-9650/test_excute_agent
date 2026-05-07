@@ -258,31 +258,37 @@ async def start_generation(payload: dict):
 
     async def _run():
         try:
-            for case in state.cases:
-                # 优先从探索记录生成（新架构）
-                if case.id in state.exploration_results:
-                    exp_result = state.exploration_results[case.id]
-                    if exp_result.status == "explored":
-                        script = orch.generator.generate_from_exploration(case, exp_result)
-                        if orch.generator.precheck(script)["valid"]:
-                            state.scripts[case.id] = script
-                            state.log("info", f"Script from exploration: {case.title}")
-                            continue
+            use_v3 = getattr(cfg, 'use_v3_engine', False)
 
-                # 回退到旧的模板生成
-                if case.completeness not in ("complete", "enriched"):
-                    continue
-                element_map = orch._build_element_map(state.exploration_result)
-                script = orch.generator.build_script_template(case, element_map)
-                if orch.generator.precheck(script)["valid"]:
-                    state.scripts[case.id] = script
-                    state.log("info", f"Script from template: {case.title}")
+            if use_v3 and state.action_irs:
+                # v3: 从 ActionIR 编译脚本
+                await orch._log(state, "info", "--- Script Compilation (v3 - IR → Playwright) ---")
+                await orch._generate_scripts_v3(state)
+            else:
+                # v1/v2: 旧的模板生成
+                for case in state.cases:
+                    if case.id in state.exploration_results:
+                        exp_result = state.exploration_results[case.id]
+                        if hasattr(exp_result, 'status') and exp_result.status == "explored":
+                            script = orch.generator.generate_from_exploration(case, exp_result)
+                            if orch.generator.precheck(script)["valid"]:
+                                state.scripts[case.id] = script
+                                await orch._log(state, "info", f"Script from exploration: {case.title}")
+                                continue
+
+                    if case.completeness not in ("complete", "enriched"):
+                        continue
+                    element_map = orch._build_element_map(state.exploration_result)
+                    script = orch.generator.build_script_template(case, element_map)
+                    if orch.generator.precheck(script)["valid"]:
+                        state.scripts[case.id] = script
+                        await orch._log(state, "info", f"Script from template: {case.title}")
 
             state.status = "generated"
-            state.log("info", f"Done: {len(state.scripts)} scripts ready")
+            await orch._log(state, "info", f"--- Generation done ---")
         except Exception as e:
             state.status = "failed"
-            state.log("error", f"Generation failed: {e}")
+            await orch._log(state, "error", f"Generation failed: {e}")
 
     asyncio.create_task(_run())
     return {"run_id": run_id, "status": "generating"}

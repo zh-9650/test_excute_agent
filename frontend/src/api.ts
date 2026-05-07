@@ -1,4 +1,4 @@
-const BASE = "http://localhost:8765/api/v1";
+const BASE = "http://localhost:8000/api/v1";
 
 export async function uploadCases(file: File) {
   const form = new FormData();

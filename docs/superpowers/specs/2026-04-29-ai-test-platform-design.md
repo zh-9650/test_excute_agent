@@ -1,4 +1,12 @@
-# AI 驱动自动化测试平台 — 设计规格
+# AI 驱动自动化测试平台 — 设计规格（v1，已废弃）
+
+> **⚠ 本文档已被 2026-05-06 新设计取代。**
+> 新设计文档：`docs/superpowers/specs/2026-05-06-mcp-style-test-engine-design.md`
+> 开发计划：`docs/plans/2026-05-06-v3-engine-plan.md`
+>
+> 本文档保留仅供参考，不代表当前架构方向。
+
+---
 
 ## 概述
 

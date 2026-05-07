@@ -55,15 +55,46 @@ class CSVParser:
         if not steps_text.strip():
             return []
         result = []
-        pattern = re.compile(r'(\d+)\.\s*(.*?)(?=\d+\.\s|\Z)', re.DOTALL)
+        pattern = re.compile(r'(\d+)\.\s*(.*?)(?=\d+\.\s*|\Z)', re.DOTALL)
         matches = pattern.findall(steps_text)
+        order = 0
         for num, action in matches:
             action_text = action.strip().rstrip(";；").strip()
-            if action_text:
-                result.append(Step(order=int(num), action=action_text))
+            if not action_text:
+                continue
+            # 拆分复合步骤：用中文句号、分号、逗号+动作关键词 拆分
+            sub_actions = self._split_compound_step(action_text)
+            for sub in sub_actions:
+                order += 1
+                result.append(Step(order=order, action=sub))
         if not result and steps_text.strip():
             result.append(Step(order=1, action=steps_text.strip()))
         return result
+
+    def _split_compound_step(self, text: str) -> list[str]:
+        """拆分复合步骤为原子操作
+
+        例如: "打开系统登录页，输入正确的用户名密码点击登录"
+          → ["打开系统登录页", "输入正确的用户名密码点击登录"]
+
+        例如: "在用户名输入框输入test_c；在密码输入框输入123456；点击登录按钮"
+          → ["在用户名输入框输入test_c", "在密码输入框输入123456", "点击登录按钮"]
+        """
+        # 用中文句号、分号、句号+数字 拆分
+        parts = re.split(r'[；;。\n]', text)
+        result = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # 进一步用逗号+动作关键词拆分（但保留"输入正确的用户名密码"这种不拆）
+            # 只在逗号后跟明确的动作动词时拆分
+            sub_parts = re.split(r'[，,](?=\s*(?:点击|输入|选择|填写|打开|进入|导航|等待|上传|删除|勾选|取消))', part)
+            for sp in sub_parts:
+                sp = sp.strip()
+                if sp:
+                    result.append(sp)
+        return result if result else [text]
 
     def _parse_priority(self, val: str) -> int:
         try:
